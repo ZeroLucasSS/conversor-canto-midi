@@ -1,0 +1,44 @@
+# Ambientes virtuais
+venv/
+.venv/
+env/
+ENV/
+
+# Arquivos temporários do Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Credenciais e configurações locais
+.env
+.env.*
+!.env.example
+
+# Áudios, letras e resultados locais
+/audios/*
+!/audios/.gitkeep
+
+/saida/*
+!/saida/.gitkeep
+
+# Caches locais de modelos
+/.cache/
+/model_cache/
+
+# Logs
+*.log
+
+# Arquivos do sistema operacional
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Configurações locais de editores
+.idea/
+.vscode/
+
+# Modelos de IA armazenados localmente
+/modelos/
