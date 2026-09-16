@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from exportacao_final import validar_cobertura, validar_notas, exportar_complementos
 
 from pathlib import Path
 
@@ -325,6 +326,13 @@ def main():
         [],
     )
 
+    from letra import ler_srt
+    fontes_srt = [p for p in pasta_musica.iterdir()
+                  if p.is_file() and p.name.casefold() == "letra.srt"]
+    if len(fontes_srt) != 1:
+        raise ValueError("É necessário exatamente um letra.srt para conferir a cobertura.")
+    auditoria = validar_cobertura(dados_alinhamento, ler_srt(fontes_srt[0]))
+
     analisador = AnalisadorNotasSilabicas(
         caminho_voz=caminho_voz,
         caminho_instrumental=(
@@ -351,7 +359,7 @@ def main():
             "exatamente uma nota por sílaba"
         ),
         "melismas": False,
-        "versao_conversor": "2.3-cauda-e-duracao",
+        "versao_conversor": "2.4-cobertura-srt-dificuldade",
         "regra_duracao": "tempos silabicos com redistribuicao limitada e cauda final acustica",
         "total_notas_com_ajustes_duracao": sum(bool(n.ajustes_duracao) for n in notas),
         "versao_alinhamento": dados_alinhamento.get("metadados", {}).get("versao_alinhador"),
@@ -362,8 +370,11 @@ def main():
 
     if len(notas) != len(silabas):
         raise RuntimeError("A quantidade de notas não corresponde à quantidade de sílabas.")
+    validar_notas(silabas, notas)
     # Primeiro valida/exporta o MIDI. Falhas não publicam um relatório de sucesso.
     gerar_midi_silabico(notas=notas, caminho_saida=caminho_midi)
+    metadados["auditoria_cobertura"] = auditoria
+    metadados["avaliacao_dificuldade"] = exportar_complementos(caminho_midi, silabas, notas)
     salvar_notas_json(caminho=caminho_json, notas=notas, metadados=metadados)
     salvar_notas_csv(caminho=caminho_csv, notas=notas)
 

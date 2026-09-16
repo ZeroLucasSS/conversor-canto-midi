@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from alinhamento import AlinhadorLetraSRT
+from exportacao_final import validar_cobertura
 
 from config_alinhamento import (
     DISPOSITIVO_ALINHAMENTO,
@@ -513,9 +514,11 @@ def main():
         ],
     }
 
+    resultado_completo["metadados"]["auditoria_cobertura"] = validar_cobertura(
+        resultado_completo, blocos_fonte=blocos,
+    )
     salvar_json(
-        pasta_saida
-        / "alinhamento_completo.json",
+        pasta_saida / "alinhamento_completo.json",
         resultado_completo,
     )
 
