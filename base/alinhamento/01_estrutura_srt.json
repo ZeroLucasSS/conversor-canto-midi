@@ -1,0 +1,216 @@
+{
+  "arquivo_srt": "C:\\Projetos Visual Studio\\07 - Conversor Voz MIDI\\Conversor_Voz_MIDI\\audios\\letra.srt",
+  "total_blocos": 23,
+  "blocos_com_texto": 23,
+  "blocos_vazios": 0,
+  "indices_blocos_vazios": [],
+  "blocos": [
+    {
+      "indice": 1,
+      "ordem": 1,
+      "inicio": 20.23,
+      "fim": 30.03,
+      "texto_original": "Todos os dias, quando acordo, não tenho mais o tempo que",
+      "texto_normalizado": "Todos os dias, quando acordo, não tenho mais o tempo que",
+      "vazio": false
+    },
+    {
+      "indice": 2,
+      "ordem": 2,
+      "inicio": 30.03,
+      "fim": 33.69,
+      "texto_original": "passou, mas tenho muito tempo.",
+      "texto_normalizado": "passou, mas tenho muito tempo.",
+      "vazio": false
+    },
+    {
+      "indice": 3,
+      "ordem": 3,
+      "inicio": 35.89,
+      "fim": 40.39,
+      "texto_original": "Temos todo o tempo do mundo.",
+      "texto_normalizado": "Temos todo o tempo do mundo.",
+      "vazio": false
+    },
+    {
+      "indice": 4,
+      "ordem": 4,
+      "inicio": 42.43,
+      "fim": 50.51,
+      "texto_original": "Todos os dias, antes de dormir, lembro e penso como foi o dia.",
+      "texto_normalizado": "Todos os dias, antes de dormir, lembro e penso como foi o dia.",
+      "vazio": false
+    },
+    {
+      "indice": 5,
+      "ordem": 5,
+      "inicio": 51.51,
+      "fim": 60.45,
+      "texto_original": "Sempre em frente, não temos tempo a perder.",
+      "texto_normalizado": "Sempre em frente, não temos tempo a perder.",
+      "vazio": false
+    },
+    {
+      "indice": 6,
+      "ordem": 6,
+      "inicio": 61.87,
+      "fim": 71.29,
+      "texto_original": "Nosso suor sagrado é bem mais belo que esse sangue amargo",
+      "texto_normalizado": "Nosso suor sagrado é bem mais belo que esse sangue amargo",
+      "vazio": false
+    },
+    {
+      "indice": 7,
+      "ordem": 7,
+      "inicio": 71.29,
+      "fim": 74.93,
+      "texto_original": "e tão sério.",
+      "texto_normalizado": "e tão sério.",
+      "vazio": false
+    },
+    {
+      "indice": 8,
+      "ordem": 8,
+      "inicio": 75.93,
+      "fim": 86.59,
+      "texto_original": "E selvagem, selvagem,",
+      "texto_normalizado": "E selvagem, selvagem,",
+      "vazio": false
+    },
+    {
+      "indice": 9,
+      "ordem": 9,
+      "inicio": 87.53,
+      "fim": 91.59,
+      "texto_original": "selvagem.",
+      "texto_normalizado": "selvagem.",
+      "vazio": false
+    },
+    {
+      "indice": 10,
+      "ordem": 10,
+      "inicio": 103.01,
+      "fim": 108.61,
+      "texto_original": "Veja o sol dessa manhã tão cinza.",
+      "texto_normalizado": "Veja o sol dessa manhã tão cinza.",
+      "vazio": false
+    },
+    {
+      "indice": 11,
+      "ordem": 11,
+      "inicio": 109.61,
+      "fim": 116.27,
+      "texto_original": "A tempestade que chega é da cor dos seus olhos.",
+      "texto_normalizado": "A tempestade que chega é da cor dos seus olhos.",
+      "vazio": false
+    },
+    {
+      "indice": 12,
+      "ordem": 12,
+      "inicio": 120.67,
+      "fim": 126.41,
+      "texto_original": "Caçamos, então me abraça forte.",
+      "texto_normalizado": "Caçamos, então me abraça forte.",
+      "vazio": false
+    },
+    {
+      "indice": 13,
+      "ordem": 13,
+      "inicio": 129.35,
+      "fim": 133.21,
+      "texto_original": "Me diz mais uma vez que já estamos.",
+      "texto_normalizado": "Me diz mais uma vez que já estamos.",
+      "vazio": false
+    },
+    {
+      "indice": 14,
+      "ordem": 14,
+      "inicio": 133.21,
+      "fim": 138.39,
+      "texto_original": "Diz antes de tudo.",
+      "texto_normalizado": "Diz antes de tudo.",
+      "vazio": false
+    },
+    {
+      "indice": 15,
+      "ordem": 15,
+      "inicio": 154.93,
+      "fim": 160.29,
+      "texto_original": "Não tenho medo do escuro.",
+      "texto_normalizado": "Não tenho medo do escuro.",
+      "vazio": false
+    },
+    {
+      "indice": 16,
+      "ordem": 16,
+      "inicio": 161.21,
+      "fim": 170.07,
+      "texto_original": "Mas deixe as luzes acesas",
+      "texto_normalizado": "Mas deixe as luzes acesas",
+      "vazio": false
+    },
+    {
+      "indice": 17,
+      "ordem": 17,
+      "inicio": 170.07,
+      "fim": 171.41,
+      "texto_original": "agora.",
+      "texto_normalizado": "agora.",
+      "vazio": false
+    },
+    {
+      "indice": 18,
+      "ordem": 18,
+      "inicio": 175.52,
+      "fim": 180.54,
+      "texto_original": "O que foi escondido é o que se escondeu.",
+      "texto_normalizado": "O que foi escondido é o que se escondeu.",
+      "vazio": false
+    },
+    {
+      "indice": 19,
+      "ordem": 19,
+      "inicio": 180.76,
+      "fim": 185.58,
+      "texto_original": "E o que foi prometido, ninguém prometeu.",
+      "texto_normalizado": "E o que foi prometido, ninguém prometeu.",
+      "vazio": false
+    },
+    {
+      "indice": 20,
+      "ordem": 20,
+      "inicio": 185.98,
+      "fim": 188.58,
+      "texto_original": "Nem foi tempo perdido.",
+      "texto_normalizado": "Nem foi tempo perdido.",
+      "vazio": false
+    },
+    {
+      "indice": 21,
+      "ordem": 21,
+      "inicio": 189.58,
+      "fim": 195.8,
+      "texto_original": "Somos tão jovens.",
+      "texto_normalizado": "Somos tão jovens.",
+      "vazio": false
+    },
+    {
+      "indice": 22,
+      "ordem": 22,
+      "inicio": 196.18,
+      "fim": 200.48,
+      "texto_original": "Tão jovens.",
+      "texto_normalizado": "Tão jovens.",
+      "vazio": false
+    },
+    {
+      "indice": 23,
+      "ordem": 23,
+      "inicio": 201.5,
+      "fim": 203.76,
+      "texto_original": "Tão jovens.",
+      "texto_normalizado": "Tão jovens.",
+      "vazio": false
+    }
+  ]
+}

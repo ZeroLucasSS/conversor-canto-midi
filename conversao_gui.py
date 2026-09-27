@@ -106,8 +106,26 @@ def _parar(processo: subprocess.Popen) -> None:
         processo.wait(timeout=5)
 
 
+@dataclass
+class _Tarefa:
+    script: Path
+    args: list[str]
+    log: Path
+    ao_vivo: bool = True  # False: o log é mostrado quando o processo termina
+    ambiente: dict[str, str] | None = None
+
+
 def _executar(script: Path, args: list[str], projeto: Path, log: Path,
               cancelar: Event, emitir: Callable[[str, str], None]) -> None:
+    _executar_tarefas([_Tarefa(script, args, log)], projeto, cancelar, emitir)
+
+
+def _executar_tarefas(tarefas: list[_Tarefa], projeto: Path, cancelar: Event,
+                      emitir: Callable[[str, str], None]) -> None:
+    """Executa os scripts ao mesmo tempo e retorna quando todos terminarem.
+
+    Um erro ou cancelamento encerra todos os processos ainda em execução.
+    """
     if cancelar.is_set():
         raise ConversaoCancelada()
     ambiente = os.environ.copy()
@@ -118,36 +136,85 @@ def _executar(script: Path, args: list[str], projeto: Path, log: Path,
     }
     # Arquivo temporário evita bloqueios de pipe e permite cancelar mesmo
     # quando o modelo passa muito tempo sem imprimir nenhuma mensagem.
-    with log.open("wb") as saida, log.open("rb") as leitura:
-        processo = subprocess.Popen(
-            [_python(), "-u", str(script), *args], cwd=str(projeto),
-            env=ambiente, stdin=subprocess.DEVNULL, stdout=saida,
-            stderr=subprocess.STDOUT, **opcoes,
-        )
-        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    with ExitStack() as pilha:
+        ativos = []
         try:
-            while True:
+            for tarefa in tarefas:
+                saida = pilha.enter_context(tarefa.log.open("wb"))
+                leitura = pilha.enter_context(tarefa.log.open("rb"))
+                processo = subprocess.Popen(
+                    [_python(), "-u", str(tarefa.script), *tarefa.args], cwd=str(projeto),
+                    env={**ambiente, **(tarefa.ambiente or {})}, stdin=subprocess.DEVNULL, stdout=saida,
+                    stderr=subprocess.STDOUT, **opcoes,
+                )
+                ativos.append((tarefa, processo, leitura,
+                               codecs.getincrementaldecoder("utf-8")("replace")))
+            pendentes = list(ativos)
+            while pendentes:
                 if cancelar.is_set():
-                    _parar(processo)
                     raise ConversaoCancelada()
-                trecho = decoder.decode(leitura.read(65536))
-                if trecho:
-                    emitir("log", trecho)
-                if processo.poll() is not None:
+                for item in list(pendentes):
+                    tarefa, processo, leitura, decoder = item
+                    if tarefa.ao_vivo:
+                        trecho = decoder.decode(leitura.read(65536))
+                        if trecho:
+                            emitir("log", trecho)
+                    if processo.poll() is None:
+                        continue
+                    pendentes.remove(item)
+                    if not tarefa.ao_vivo:
+                        emitir("log", f"\n--- {tarefa.script.name} (executado em paralelo) ---\n")
                     while dados := leitura.read(65536):
                         emitir("log", decoder.decode(dados))
                     final = decoder.decode(b"", final=True)
                     if final:
                         emitir("log", final)
                     if processo.returncode != 0:
-                        raise RuntimeError(f"{script.name} terminou com erro "
+                        raise RuntimeError(f"{tarefa.script.name} terminou com erro "
                                            f"(código {processo.returncode}). "
                                            "Consulte os detalhes da execução.")
-                    return
                 cancelar.wait(0.10)
         finally:
-            if processo.poll() is None:
-                _parar(processo)
+            for _, processo, _, _ in ativos:
+                if processo.poll() is None:
+                    _parar(processo)
+
+
+def _memoria_disponivel() -> int | None:
+    """Memória física disponível em bytes (None se não for possível medir)."""
+    if os.name != "nt":
+        try:
+            return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        except (ValueError, OSError, AttributeError):
+            return None
+    import ctypes
+
+    class _Estado(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+    estado = _Estado()
+    estado.dwLength = ctypes.sizeof(estado)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(estado)):
+        return None
+    return int(estado.ullAvailPhys)
+
+
+# Picos medidos numa música de 5 min: ~2,2–2,6 GB (alinhamento, só durante a
+# carga do modelo) + ~1,3 GB (análise de áudio). Em teste com ~3 GB livres a
+# conversão levou 100–110 s em paralelo e 161 s em sequência. Abaixo deste limite, as
+# etapas rodam em sequência para evitar paginação.
+MEMORIA_MINIMA_PARALELO = int(2.5 * 1024 ** 3)
+
+# A análise de áudio é quase toda sequencial (pYIN, filtro de mediana). Com
+# uma thread, ela não disputa os núcleos usados pelo PyTorch no alinhamento.
+AMBIENTE_ANALISE_PARALELA = {
+    "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
+    "NUMBA_NUM_THREADS": "1",
+}
 
 
 def _salvar_conjunto(origens: tuple[Path, Path, Path], pasta: Path, nome: str,
@@ -226,17 +293,37 @@ def converter(pasta: Path, nome: str, cancelar: Event,
         trabalho = Path(temp)
         alinhamento = trabalho / "alinhamento"
         notas = trabalho / "notas"
-        emitir("etapa", "1 de 2 · Preparando a letra e alinhando as sílabas")
-        _executar(projeto / "preparar_letra.py",
-                  [str(pasta), "--saida", str(alinhamento)], projeto,
-                  trabalho / "alinhamento.log", cancelar, emitir)
+        tarefas = [_Tarefa(projeto / "preparar_letra.py",
+                           [str(pasta), "--saida", str(alinhamento)],
+                           trabalho / "alinhamento.log")]
+        # A análise de pitch/harmonia não depende da letra: roda junto com o
+        # alinhamento quando há memória suficiente. O resultado só é usado se
+        # a identidade (áudios, parâmetros, versões e código) conferir.
+        analise = trabalho / "analise_audio.npz"
+        memoria = _memoria_disponivel()
+        paralelo = ((projeto / "analisar_audio.py").is_file()
+                    and memoria is not None and memoria >= MEMORIA_MINIMA_PARALELO)
+        if paralelo:
+            tarefas.append(_Tarefa(projeto / "analisar_audio.py",
+                                   [str(pasta), "--saida", str(analise)],
+                                   trabalho / "analise_audio.log", ao_vivo=False,
+                                   ambiente=AMBIENTE_ANALISE_PARALELA))
+            emitir("etapa", "1 de 2 · Alinhando a letra e analisando voz e harmonia")
+        else:
+            emitir("etapa", "1 de 2 · Preparando a letra e alinhando as sílabas")
+            if memoria is not None:
+                emitir("log", f"Memória livre ({memoria / 1024 ** 3:.1f} GB) insuficiente "
+                              "para processar em paralelo; etapas em sequência.\n")
+        _executar_tarefas(tarefas, projeto, cancelar, emitir)
         json_alinhamento = alinhamento / "alinhamento_completo.json"
         if not json_alinhamento.is_file():
             raise RuntimeError("A preparação não gerou alinhamento_completo.json.")
-        emitir("etapa", "2 de 2 · Analisando voz, harmonia e gerando o MIDI")
+        emitir("etapa", "2 de 2 · Escolhendo as notas e gerando o MIDI" if paralelo
+               else "2 de 2 · Analisando voz, harmonia e gerando o MIDI")
         _executar(projeto / "gerar_midi_silabico.py",
                   ["resultado.mid", "--pasta-musica", str(pasta),
-                   "--alinhamento", str(json_alinhamento), "--saida", str(notas)],
+                   "--alinhamento", str(json_alinhamento), "--saida", str(notas),
+                   *(["--analise-audio", str(analise)] if paralelo else [])],
                   projeto, trabalho / "midi.log", cancelar, emitir)
         emitir("etapa", "Salvando MIDI, SRT silábico e metadados")
         destino = _salvar_conjunto((notas / "resultado.mid", notas / "resultado_silabas.srt",

@@ -3,6 +3,7 @@ from __future__ import annotations
 from difflib import SequenceMatcher
 from pathlib import Path
 from sustentacao import recuperar_sustentacoes
+from medicao import informar_ambiente, medir
 
 import config_alinhamento as cfg
 from letra import (
@@ -83,15 +84,26 @@ class AlinhadorLetraSRT:
         self.margem_analise = max(0.0, float(margem_analise))
         self.pasta_modelos = Path(pasta_modelos).expanduser().resolve() if pasta_modelos else None
         print("Carregando voz e evidências acústicas...")
-        self.audio = whisperx.load_audio(str(self.caminho_voz))
+        with medir("leitura da voz (16 kHz)"):
+            self.audio = whisperx.load_audio(str(self.caminho_voz))
         self.duracao_audio = len(self.audio) / SAMPLE_RATE_WHISPERX
-        self.evidencia = analisar_audio_canto(self.audio, SAMPLE_RATE_WHISPERX)
+        print(f"Duração da voz: {self.duracao_audio:.1f} s")
+        informar_ambiente(self.dispositivo)
+        with medir("evidências acústicas da voz"):
+            self.evidencia = analisar_audio_canto(self.audio, SAMPLE_RATE_WHISPERX)
         argumentos = dict(language_code=idioma, device=self.dispositivo, model_name=modelo_alinhamento)
         if self.pasta_modelos is not None:
             self.pasta_modelos.mkdir(parents=True, exist_ok=True)
             argumentos["model_dir"] = str(self.pasta_modelos)
         print(f"Carregando alinhador ({idioma}, {self.dispositivo})...")
-        self.modelo, self.metadados_modelo = whisperx.load_align_model(**argumentos)
+        with medir("carregamento do modelo de alinhamento"):
+            try:
+                # Com o modelo já em disco, evita a consulta ao Hugging Face Hub.
+                self.modelo, self.metadados_modelo = whisperx.load_align_model(
+                    **argumentos, model_cache_only=True)
+            except Exception:
+                # Primeira execução (ou cache incompleto): baixa normalmente.
+                self.modelo, self.metadados_modelo = whisperx.load_align_model(**argumentos)
 
     def alinhar(self, blocos):
         import whisperx

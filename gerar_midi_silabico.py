@@ -217,6 +217,15 @@ def criar_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    parser.add_argument(
+        "--analise-audio",
+        default=None,
+        help=(
+            "Arquivo .npz de analisar_audio.py. Só é reaproveitado se "
+            "áudios, parâmetros, versões e código forem os mesmos."
+        ),
+    )
+
     return parser
 
 
@@ -337,6 +346,10 @@ def main():
         caminho_voz=caminho_voz,
         caminho_instrumental=(
             caminho_instrumental
+        ),
+        analise_audio=(
+            resolver_caminho(pasta_projeto, argumentos.analise_audio)
+            if argumentos.analise_audio else None
         ),
     )
 

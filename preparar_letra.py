@@ -7,6 +7,7 @@ from pathlib import Path
 
 from alinhamento import AlinhadorLetraSRT
 from exportacao_final import validar_cobertura
+from medicao import medir
 
 from config_alinhamento import (
     DISPOSITIVO_ALINHAMENTO,
@@ -375,12 +376,13 @@ def main():
         pasta_modelos=pasta_modelos,
     )
 
-    (
-        palavras,
-        avisos_alinhamento,
-    ) = alinhador.alinhar(
-        blocos
-    )
+    with medir("alinhamento forçado e recuperação de sustentação"):
+        (
+            palavras,
+            avisos_alinhamento,
+        ) = alinhador.alinhar(
+            blocos
+        )
 
     resultado_palavras = {
         "arquivo_voz": str(
@@ -433,12 +435,13 @@ def main():
     print("ETAPA 3 — ALINHAMENTO DAS SÍLABAS")
     print("=" * 60)
 
-    silabas = gerar_silabas_alinhadas(
-        palavras=palavras,
-        idioma=(
-            argumentos.idioma_silabas
-        ),
-    )
+    with medir("separação e alinhamento das sílabas"):
+        silabas = gerar_silabas_alinhadas(
+            palavras=palavras,
+            idioma=(
+                argumentos.idioma_silabas
+            ),
+        )
 
     resultado_silabas = {
         "arquivo_voz": str(

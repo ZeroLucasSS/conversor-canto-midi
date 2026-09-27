@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import time
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any, Optional
 import librosa
 import numpy as np
 from config_alinhamento import PESO_MINIMO_ENERGIA_PITCH
+from medicao import informar_ambiente, medir
 
 from config_notas import (
     BINS_POR_OITAVA_CQT,
@@ -517,6 +519,67 @@ def validar_tempos_silabas(silabas, duracao_audio=None):
         ultimo_fim = b
 
 
+# Resultado da análise de áudio usado na escolha das notas.
+CAMPOS_ANALISE = (
+    "sr", "duracao_voz", "f0", "voiced_flag", "voiced_prob", "tempos",
+    "midi_decimal", "energia_voz", "centro_vocal_global",
+    "chroma_harmonico", "confianca_harmonica",
+)
+VERSAO_ANALISE_AUDIO = 1
+
+
+def identidade_analise(caminho_voz: str | Path, caminho_instrumental: str | Path) -> str:
+    """Identifica a análise por conteúdo, parâmetros, versões e código.
+
+    Nunca depende só do nome do arquivo: qualquer mudança nos áudios, na
+    configuração, nas bibliotecas ou nos módulos de análise invalida o reuso.
+    """
+    import hashlib
+    import importlib.metadata as metadata
+
+    import config_alinhamento
+    import config_notas
+
+    def sha256(caminho: Path) -> str:
+        resumo = hashlib.sha256()
+        with Path(caminho).open("rb") as arquivo:
+            while bloco := arquivo.read(1024 * 1024):
+                resumo.update(bloco)
+        return resumo.hexdigest()
+
+    def canonico(valor: Any) -> Any:
+        # repr de set muda de ordem entre processos (hash aleatório do Python).
+        if isinstance(valor, (set, frozenset)):
+            return sorted(repr(canonico(v)) for v in valor)
+        if isinstance(valor, dict):
+            return {repr(k): canonico(v) for k, v in valor.items()}
+        if isinstance(valor, (list, tuple)):
+            return [canonico(v) for v in valor]
+        return repr(valor)
+
+    def configuracao(modulo) -> dict[str, Any]:
+        return {nome: canonico(getattr(modulo, nome)) for nome in sorted(dir(modulo))
+                if nome.isupper()}
+
+    versoes = {}
+    for pacote in ("librosa", "numpy", "scipy", "numba", "soundfile", "audioread", "soxr"):
+        try:
+            versoes[pacote] = metadata.version(pacote)
+        except metadata.PackageNotFoundError:
+            versoes[pacote] = None
+    pasta = Path(__file__).resolve().parent
+    return json.dumps({
+        "versao": VERSAO_ANALISE_AUDIO,
+        "voz": sha256(caminho_voz),
+        "instrumental": sha256(caminho_instrumental),
+        "config_notas": configuracao(config_notas),
+        "config_alinhamento": configuracao(config_alinhamento),
+        "bibliotecas": versoes,
+        "codigo": {nome: sha256(pasta / nome) for nome in
+                   ("notas_silabicas.py", "pyin_rapido.py", "letra.py")},
+    }, sort_keys=True)
+
+
 class AnalisadorNotasSilabicas:
     """
     Escolhe exatamente uma nota para cada sílaba.
@@ -536,6 +599,7 @@ class AnalisadorNotasSilabicas:
         self,
         caminho_voz: str | Path,
         caminho_instrumental: str | Path,
+        analise_audio: str | Path | None = None,
     ):
         self.caminho_voz = Path(
             caminho_voz
@@ -557,11 +621,16 @@ class AnalisadorNotasSilabicas:
                 f"{self.caminho_instrumental}"
             )
 
+        self._evidencia_duracao = None
+        if analise_audio is not None and self._carregar_analise(analise_audio):
+            return
+
         print()
         print("=" * 60)
         print("CARREGANDO VOZ E INSTRUMENTAL")
         print("=" * 60)
 
+        inicio_leitura = time.perf_counter()
         self.y_voz, self.sr = librosa.load(
             str(
                 self.caminho_voz
@@ -587,6 +656,10 @@ class AnalisadorNotasSilabicas:
                 "sample rates diferentes."
             )
 
+        print(f"[tempo] leitura da voz e do instrumental: "
+              f"{time.perf_counter() - inicio_leitura:.1f} s")
+        informar_ambiente("cpu")
+
         self.duracao_voz = (
             len(self.y_voz)
             / float(self.sr)
@@ -606,8 +679,62 @@ class AnalisadorNotasSilabicas:
             f"{self.duracao_instrumental:.3f} s"
         )
 
-        self._analisar_voz()
-        self._analisar_harmonia()
+        with medir("pitch vocal (pYIN)"):
+            self._analisar_voz()
+        with medir("contexto harmônico do instrumental"):
+            self._analisar_harmonia()
+
+    def evidencia_duracao(self) -> dict[str, Any]:
+        """Evidência acústica da voz em SAMPLE_RATE_NOTAS para a cauda final."""
+        if self._evidencia_duracao is None:
+            from letra import analisar_audio_canto
+            voz_mono = self.y_voz if self.y_voz.ndim == 1 else self.y_voz.mean(axis=0)
+            self._evidencia_duracao = analisar_audio_canto(voz_mono, self.sr)
+        return self._evidencia_duracao
+
+    def salvar_analise(self, caminho: str | Path) -> None:
+        """Grava a análise de áudio (independente das sílabas) para reuso.
+
+        A identidade inclui o conteúdo dos áudios, os parâmetros, as versões
+        das bibliotecas e o código-fonte da análise; ver identidade_analise.
+        """
+        import config_alinhamento as cfg_duracao
+        dados = {nome: np.asarray(getattr(self, nome)) for nome in CAMPOS_ANALISE}
+        if cfg_duracao.ALONGAR_FINAL_FRASE_MIDI:
+            for chave, valor in self.evidencia_duracao().items():
+                dados[f"evidencia_{chave}"] = np.asarray(valor)
+        identidade = identidade_analise(self.caminho_voz, self.caminho_instrumental)
+        caminho = Path(caminho).expanduser().resolve()
+        caminho.parent.mkdir(parents=True, exist_ok=True)
+        temporario = caminho.with_name(caminho.name + ".parcial.npz")
+        np.savez(temporario, identidade=np.array(identidade), **dados)
+        temporario.replace(caminho)
+
+    def _carregar_analise(self, caminho: str | Path) -> bool:
+        caminho = Path(caminho).expanduser().resolve()
+        if not caminho.is_file():
+            print("Análise de áudio prévia não encontrada; recalculando.")
+            return False
+        with np.load(caminho, allow_pickle=False) as arquivo:
+            esperada = identidade_analise(self.caminho_voz, self.caminho_instrumental)
+            if "identidade" not in arquivo or str(arquivo["identidade"]) != esperada:
+                print("Análise de áudio prévia não corresponde aos áudios, parâmetros "
+                      "ou versões atuais; recalculando.")
+                return False
+            for nome in CAMPOS_ANALISE:
+                valor = arquivo[nome]
+                setattr(self, nome, valor.item() if valor.ndim == 0 else valor)
+            evidencia = {chave[len("evidencia_"):]: arquivo[chave]
+                         for chave in arquivo.files if chave.startswith("evidencia_")}
+        if evidencia:
+            evidencia["passo"] = float(evidencia["passo"])
+            self._evidencia_duracao = evidencia
+        self.sr = int(self.sr)
+        self.duracao_voz = float(self.duracao_voz)
+        self.centro_vocal_global = float(self.centro_vocal_global)
+        print(f"Análise de áudio reaproveitada: {caminho.name}")
+        print(f"Voz: {self.duracao_voz:.3f} s")
+        return True
 
     def _analisar_voz(self):
         print()
@@ -623,11 +750,14 @@ class AnalisadorNotasSilabicas:
             NOTA_VOCAL_MAXIMA
         )
 
+        # Mesmo resultado de librosa.pyin; só a decodificação Viterbi é esparsa.
+        from pyin_rapido import pyin
+
         (
             self.f0,
             self.voiced_flag,
             self.voiced_prob,
-        ) = librosa.pyin(
+        ) = pyin(
             self.y_voz,
             fmin=fmin,
             fmax=fmax,
@@ -1754,11 +1884,10 @@ class AnalisadorNotasSilabicas:
         if cfg_duracao.AJUSTAR_DURACOES_MIDI or cfg_duracao.ALONGAR_FINAL_FRASE_MIDI:
             from tempos_midi import ajustar_tempos_midi
             evidencia = None
-            if cfg_duracao.ALONGAR_FINAL_FRASE_MIDI and resultado:
-                from letra import analisar_audio_canto
-                voz_mono = self.y_voz if self.y_voz.ndim == 1 else self.y_voz.mean(axis=0)
-                evidencia = analisar_audio_canto(voz_mono, self.sr)
-            resultado = ajustar_tempos_midi(resultado, evidencia, self.duracao_voz)
+            with medir("duração e sustentação das notas"):
+                if cfg_duracao.ALONGAR_FINAL_FRASE_MIDI and resultado:
+                    evidencia = self.evidencia_duracao()
+                resultado = ajustar_tempos_midi(resultado, evidencia, self.duracao_voz)
         return resultado
 
 

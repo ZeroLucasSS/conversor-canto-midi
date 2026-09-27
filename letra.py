@@ -236,25 +236,37 @@ def analisar_audio_canto(audio, sr=16000):
     if lag_max <= lag_min:
         raise ValueError("Faixa de frequências incompatível com a janela acústica.")
     lags = np.arange(lag_min, lag_max + 1)
-    for centro in centros:
-        x = padded[centro:centro + tamanho].copy()
-        rms.append(float(np.sqrt(np.mean(x * x))))
-        x -= x.mean()
-        espectro = np.abs(np.fft.rfft(x * np.hanning(tamanho)))
-        espectro /= np.linalg.norm(espectro) + 1e-12
+    janela = np.hanning(tamanho)
+    # Mesmos cortes de np.array_split(espectro, 16), calculados uma única vez.
+    n_bins = tamanho // 2 + 1
+    cortes = np.cumsum([0] + [n_bins // 16 + (i < n_bins % 16) for i in range(16)])
+    quadros = np.lib.stride_tricks.sliding_window_view(padded, tamanho)
+    # Mesmo cálculo por frame, vetorizado em lotes para limitar a memória.
+    for i in range(0, len(centros), 2048):
+        x = quadros[centros[i:i + 2048]].copy()
+        rms.append(np.sqrt(np.mean(x * x, axis=1)))
+        x -= x.mean(axis=1, keepdims=True)
+        espectro = np.abs(np.fft.rfft(x * janela, axis=1))
+        espectro /= np.linalg.norm(espectro, axis=1, keepdims=True) + 1e-12
         # Bandas largas reduzem a influência de pequenas mudanças de pitch.
-        bandas = np.array([np.linalg.norm(b) for b in np.array_split(espectro, 16)])
-        bandas /= np.linalg.norm(bandas) + 1e-12
+        bandas = np.stack([np.linalg.norm(espectro[:, a:b], axis=1)
+                           for a, b in zip(cortes[:-1], cortes[1:])], axis=1)
+        bandas /= np.linalg.norm(bandas, axis=1, keepdims=True) + 1e-12
         timbres.append(bandas)
-        fluxo.append(0.0 if anterior is None else float(np.linalg.norm(espectro - anterior)))
-        anterior = espectro
-        transformada = np.fft.rfft(x, nfft)
-        ac = np.fft.irfft(transformada * transformada.conj(), nfft)[:tamanho]
-        energia = np.r_[0.0, np.cumsum(x * x)]
-        den = np.sqrt(energia[tamanho - lags] * (energia[-1] - energia[lags]))
-        periodicidade.append(float(np.clip(np.max(ac[lags] / (den + 1e-12)), 0, 1)))
-    rms, fluxo = np.asarray(rms), np.asarray(fluxo)
-    periodicidade = np.asarray(periodicidade)
+        vizinho = np.vstack([espectro[:1] if anterior is None else anterior, espectro[:-1]])
+        diferenca = np.linalg.norm(espectro - vizinho, axis=1)
+        if anterior is None:
+            diferenca[0] = 0.0
+        fluxo.append(diferenca)
+        anterior = espectro[-1:]
+        transformada = np.fft.rfft(x, nfft, axis=1)
+        ac = np.fft.irfft(transformada * transformada.conj(), nfft, axis=1)[:, :tamanho]
+        energia = np.concatenate([np.zeros((len(x), 1)), np.cumsum(x * x, axis=1)], axis=1)
+        den = np.sqrt(energia[:, tamanho - lags] * (energia[:, -1:] - energia[:, lags]))
+        periodicidade.append(np.clip(np.max(ac[:, lags] / (den + 1e-12), axis=1), 0, 1))
+    rms, fluxo = np.concatenate(rms), np.concatenate(fluxo)
+    periodicidade = np.concatenate(periodicidade)
+    timbres = np.concatenate(timbres)
     escala = max(float(np.percentile(fluxo, 90)), 0.05)
     return {"tempos": centros / sr, "rms": rms, "periodicidade": periodicidade,
             "fluxo": np.clip(fluxo / escala, 0, 1), "passo": hop / sr,
