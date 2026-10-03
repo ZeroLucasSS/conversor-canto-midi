@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 from exportacao_final import validar_cobertura, validar_notas, exportar_complementos
 
@@ -229,6 +230,23 @@ def criar_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def fonte_srt_alinhamento(dados, pasta_musica):
+    """Audita a mesma legenda usada para alinhar, inclusive consolidações parciais."""
+    meta = dados.get("metadados", {})
+    informado = meta.get("arquivo_srt")
+    if informado:
+        caminho = Path(informado)
+        if not caminho.is_absolute():
+            caminho = pasta_musica / caminho
+    else:
+        caminho = pasta_musica / "letra.srt"  # compatibilidade com JSON antigo
+    if not caminho.is_file():
+        raise FileNotFoundError(f"Fonte do alinhamento não encontrada: {caminho}")
+    if meta.get("sha256_srt") and hashlib.sha256(caminho.read_bytes()).hexdigest() != meta["sha256_srt"]:
+        raise ValueError("O SRT mudou após o alinhamento. Execute novamente preparar_letra.py.")
+    return caminho
+
+
 def main():
     parser = criar_parser()
     argumentos = parser.parse_args()
@@ -336,11 +354,8 @@ def main():
     )
 
     from letra import ler_srt
-    fontes_srt = [p for p in pasta_musica.iterdir()
-                  if p.is_file() and p.name.casefold() == "letra.srt"]
-    if len(fontes_srt) != 1:
-        raise ValueError("É necessário exatamente um letra.srt para conferir a cobertura.")
-    auditoria = validar_cobertura(dados_alinhamento, ler_srt(fontes_srt[0]))
+    caminho_srt = fonte_srt_alinhamento(dados_alinhamento, pasta_musica)
+    auditoria = validar_cobertura(dados_alinhamento, ler_srt(caminho_srt))
 
     analisador = AnalisadorNotasSilabicas(
         caminho_voz=caminho_voz,
@@ -359,6 +374,8 @@ def main():
     )
 
     metadados = {
+        "arquivo_srt": str(caminho_srt),
+        "consolidacao": dados_alinhamento.get("metadados", {}).get("consolidacao"),
         "arquivo_voz": str(
             caminho_voz
         ),

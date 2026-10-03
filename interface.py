@@ -83,7 +83,7 @@ class Interface:
         ctk.CTkLabel(card_pasta, textvariable=self.caminho, wraplength=760, justify="left",
                      font=("Segoe UI", 12), text_color=TEXT_MUTED).grid(row=1, sticky="w", padx=10, pady=(6, 2))
 
-        self.arquivos = ctk.StringVar(value="Requisitos: voz, instrumental e arquivo letra.srt no diretório.")
+        self.arquivos = ctk.StringVar(value="Requisitos: voz, instrumental, letra.srt e letra.txt no diretório.")
         ctk.CTkLabel(card_pasta, textvariable=self.arquivos, wraplength=760, justify="left",
                      font=("Segoe UI", 11), text_color=TEXT_MUTED).grid(row=2, sticky="w", padx=10)
 
@@ -102,7 +102,7 @@ class Interface:
                                     text_color=TEXT_MAIN, font=("Segoe UI", 12))
         self.entrada.grid(row=1, sticky="ew", padx=10, pady=(8, 6))
 
-        ctk.CTkLabel(card_saida, text="MIDI, SRT silábico e JSON serão salvos na pasta de origem.",
+        ctk.CTkLabel(card_saida, text="Letra consolidada, MIDI, SRT silábico e relatórios serão salvos na pasta de origem.",
                      font=("Segoe UI", 11), text_color=TEXT_MUTED).grid(row=2, sticky="w", padx=10)
 
         # Botões de Ação

@@ -37,12 +37,12 @@ def validar_pasta(pasta: Path) -> dict[str, Path]:
     extensoes = {str(e).lower() for e in EXTENSOES_AUDIO_SUPORTADAS}
     arquivos = [p for p in pasta.iterdir() if p.is_file()]
     resultado = {}
-    for nome in ("voz", "instrumental", "letra"):
-        candidatos = [p for p in arquivos if p.stem.casefold() == nome
-                      and (p.suffix.lower() == ".srt" if nome == "letra"
+    for nome in ("voz", "instrumental", "letra", "letra_txt"):
+        candidatos = [p for p in arquivos if p.stem.casefold() == ("letra" if nome == "letra_txt" else nome)
+                      and (p.suffix.lower() == (".txt" if nome == "letra_txt" else ".srt") if nome in {"letra", "letra_txt"}
                            else p.suffix.lower() in extensoes)]
         if not candidatos:
-            esperado = "letra.srt" if nome == "letra" else f"{nome} (áudio)"
+            esperado = "letra.txt" if nome == "letra_txt" else ("letra.srt" if nome == "letra" else f"{nome} (áudio)")
             raise ValueError(f"Arquivo não encontrado: {esperado}.")
         if len(candidatos) > 1:
             raise ValueError(f"Há mais de um arquivo para {nome}: "
@@ -278,23 +278,33 @@ def _salvar_conjunto(origens: tuple[Path, Path, Path], pasta: Path, nome: str,
 
 def converter(pasta: Path, nome: str, cancelar: Event,
               emitir: Callable[[str, str], None], *, projeto: Path | None = None) -> ResultadoConversao:
-    """Retorna após as duas etapas concluírem e os três arquivos serem copiados.
+    """Consolida a letra, alinha sílabas e gera o conjunto MIDI.
 
     emitir recebe ('etapa', texto) ou ('log', texto). Não acessa widgets.
     """
     projeto = (projeto or Path(__file__).resolve().parent).resolve()
     pasta = Path(pasta).expanduser().resolve()
-    validar_pasta(pasta)
+    fontes = validar_pasta(pasta)
     nome = normalizar_nome(nome)
-    for script in ("preparar_letra.py", "gerar_midi_silabico.py", "exportacao_final.py"):
+    for script in ("consolidar_letra.py", "preparar_letra.py", "gerar_midi_silabico.py", "exportacao_final.py"):
         if not (projeto / script).is_file():
             raise FileNotFoundError(f"Falta {script} na pasta principal do projeto.")
     with tempfile.TemporaryDirectory(prefix="canto_midi_", ignore_cleanup_errors=True) as temp:
         trabalho = Path(temp)
         alinhamento = trabalho / "alinhamento"
         notas = trabalho / "notas"
+        consolidada = pasta / "letra_consolidada.srt"
+        emitir("etapa", "1 de 3 · Consolidando a letra")
+        _executar(projeto / "consolidar_letra.py",
+                  [str(pasta), "--txt", str(fontes["letra_txt"]),
+                   "--srt", str(fontes["letra"]), "--voz", str(fontes["voz"]),
+                   "--saida", str(consolidada), "--atualizar"],
+                  projeto, trabalho / "consolidacao.log", cancelar, emitir)
+        if not consolidada.is_file() or not consolidada.stat().st_size:
+            raise RuntimeError("A consolidação não produziu nenhum trecho com tempo utilizável.")
+        emitir("log", f"\nLetra consolidada: {consolidada}\nAvisos: {consolidada.with_suffix('.json')}\n")
         tarefas = [_Tarefa(projeto / "preparar_letra.py",
-                           [str(pasta), "--saida", str(alinhamento)],
+                           [str(pasta), "--srt", str(consolidada), "--saida", str(alinhamento)],
                            trabalho / "alinhamento.log")]
         # A análise de pitch/harmonia não depende da letra: roda junto com o
         # alinhamento quando há memória suficiente. O resultado só é usado se
@@ -308,9 +318,9 @@ def converter(pasta: Path, nome: str, cancelar: Event,
                                    [str(pasta), "--saida", str(analise)],
                                    trabalho / "analise_audio.log", ao_vivo=False,
                                    ambiente=AMBIENTE_ANALISE_PARALELA))
-            emitir("etapa", "1 de 2 · Alinhando a letra e analisando voz e harmonia")
+            emitir("etapa", "2 de 3 · Alinhando a letra e analisando voz e harmonia")
         else:
-            emitir("etapa", "1 de 2 · Preparando a letra e alinhando as sílabas")
+            emitir("etapa", "2 de 3 · Preparando a letra e alinhando as sílabas")
             if memoria is not None:
                 emitir("log", f"Memória livre ({memoria / 1024 ** 3:.1f} GB) insuficiente "
                               "para processar em paralelo; etapas em sequência.\n")
@@ -318,8 +328,8 @@ def converter(pasta: Path, nome: str, cancelar: Event,
         json_alinhamento = alinhamento / "alinhamento_completo.json"
         if not json_alinhamento.is_file():
             raise RuntimeError("A preparação não gerou alinhamento_completo.json.")
-        emitir("etapa", "2 de 2 · Escolhendo as notas e gerando o MIDI" if paralelo
-               else "2 de 2 · Analisando voz, harmonia e gerando o MIDI")
+        emitir("etapa", "3 de 3 · Escolhendo as notas e gerando o MIDI" if paralelo
+               else "3 de 3 · Analisando voz, harmonia e gerando o MIDI")
         _executar(projeto / "gerar_midi_silabico.py",
                   ["resultado.mid", "--pasta-musica", str(pasta),
                    "--alinhamento", str(json_alinhamento), "--saida", str(notas),

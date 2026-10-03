@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import sys
 
 from pathlib import Path
@@ -132,7 +134,7 @@ def criar_parser() -> argparse.ArgumentParser:
         nargs="?",
         default="audios",
         help=(
-            "Pasta que contém voz.mp3 e letra.srt. "
+            "Pasta que contém voz, letra.srt e letra.txt. "
             'O padrão é a pasta "audios".'
         ),
     )
@@ -186,6 +188,7 @@ def criar_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    parser.add_argument("--srt", help="SRT já preparado; se omitido, consolida letra.txt + letra.srt antes do alinhamento.")
     return parser
 
 
@@ -218,9 +221,26 @@ def main():
         pasta_musica
     )
 
-    caminho_srt = localizar_srt(
-        pasta_musica
-    )
+    if argumentos.srt:
+        caminho_srt = resolver_caminho(pasta_projeto, argumentos.srt)
+    else:
+        from consolidar_letra import main as consolidar_main
+        opcoes = [str(pasta_musica), "--voz", str(caminho_voz),
+                  "--srt", str(localizar_srt(pasta_musica)), "--atualizar",
+                  "--idioma", argumentos.idioma_alinhamento,
+                  "--dispositivo", argumentos.dispositivo]
+        if argumentos.modelo_alinhamento:
+            opcoes += ["--modelo-alinhamento", argumentos.modelo_alinhamento]
+        if consolidar_main(opcoes) != 0:
+            raise RuntimeError("Falha na consolidação da letra; consulte os avisos acima.")
+        caminho_srt = pasta_musica / "letra_consolidada.srt"
+    hash_srt = hashlib.sha256(caminho_srt.read_bytes()).hexdigest()
+    consolidacao = None
+    if caminho_srt.name == "letra_consolidada.srt" and caminho_srt.with_suffix(".json").is_file():
+        relatorio = json.loads(caminho_srt.with_suffix(".json").read_text(encoding="utf-8"))
+        consolidacao = {"arquivo_relatorio": str(caminho_srt.with_suffix(".json")),
+                       "status": relatorio.get("status"),
+                       "avisos": relatorio.get("resumo_avisos", [])}
 
     if argumentos.saida:
         pasta_saida = resolver_caminho(
@@ -520,6 +540,8 @@ def main():
     resultado_completo["metadados"]["auditoria_cobertura"] = validar_cobertura(
         resultado_completo, blocos_fonte=blocos,
     )
+    resultado_completo["metadados"]["sha256_srt"] = hash_srt
+    resultado_completo["metadados"]["consolidacao"] = consolidacao
     salvar_json(
         pasta_saida / "alinhamento_completo.json",
         resultado_completo,

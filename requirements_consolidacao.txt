@@ -1,0 +1,2 @@
+# Complemento ao ambiente que já executa o conversor com WhisperX.
+rapidfuzz>=3.14,<4
