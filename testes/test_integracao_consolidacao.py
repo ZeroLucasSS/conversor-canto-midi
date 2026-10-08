@@ -78,7 +78,7 @@ class IntegracaoTest(unittest.TestCase):
             destino.with_suffix(".json").write_text("antigo")
             r = {"status": "pendente", "blocos": [{"inicio": 1, "fim": 2, "texto": "novo"}], "resumo_avisos": ["aviso"]}
             c.publicar(r, destino, atualizar=True)
-            self.assertEqual(c.ler_srt(destino)[0].texto, "novo")
+            self.assertEqual(c.ler_srt(destino)[0].texto, "Novo")
             self.assertEqual((pasta / "letra.srt").read_text(encoding="utf-8"), SRT)
             with self.assertRaises(ValueError):
                 c.publicar(r, pasta / "letra.srt", atualizar=True)

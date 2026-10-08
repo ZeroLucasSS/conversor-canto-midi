@@ -207,7 +207,7 @@ class ConsolidacaoTest(unittest.TestCase):
             saida = Path(pasta) / "teste.srt"
             r["fontes"] = {}
             c.publicar(r, saida)
-            self.assertEqual(c.ler_srt(saida)[0].texto, "vida e amor")
+            self.assertEqual(c.ler_srt(saida)[0].texto, "Vida e amor")
             dados = json.loads(saida.with_suffix(".json").read_text(encoding="utf-8"))
             self.assertEqual(list(dados)[-1], "resumo_avisos")
 

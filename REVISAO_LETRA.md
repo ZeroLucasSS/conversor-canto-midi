@@ -13,8 +13,17 @@ python revisao_interface.py "audios/Livre Pra Voar"
 
 ## Decisões por ocorrência
 
-A lista à esquerda mostra as frases pendentes do TXT, os avisos do SRT e todos
-os trechos disponíveis para edição. Em “Livre Pra Voar”, as 74 palavras sem
+A janela usa fundo branco, cartões e botões CustomTkinter em azul e verde,
+sem alterar o tema da interface principal. O roteiro é **Escolha → Compare →
+Ouça e ajuste → Aplique**. Os atalhos no topo levam diretamente a cada etapa;
+os botões de salvar e publicar continuam disponíveis no rodapé.
+
+A lista à esquerda alterna entre **Revisões** (pendências e decisões) e
+**Legenda completa** (todos os trechos editáveis). **Próxima pendência** leva à
+ocorrência ainda não decidida; trocar de lista conserva o rascunho do editor.
+As ações do passo 4 têm instruções visíveis explicando quando usar cada uma.
+
+Em “Livre Pra Voar”, as 74 palavras sem
 associação se tornam 19 ocorrências do TXT. Muitas já podem estar na legenda:
 as sugestões textuais servem para localizar candidatos, não para decidir qual
 repetição foi cantada. Confira a posição e os trechos vizinhos na lista da legenda.
@@ -22,14 +31,14 @@ repetição foi cantada. Confira a posição e os trechos vizinhos na lista da l
 - **Já está na legenda**: selecione um ou mais trechos (Ctrl/Shift). Registra
   a associação, sem duplicar texto nem alterar tempos. Se outra ocorrência já
   usa o mesmo trecho, a janela pede para conferir a repetição.
-- **Corrigir / substituir seleção**: duplo clique no trecho para carregar seus
+- **Corrigir seleção**: use **Carregar seleção no editor** ou duplo clique para carregar seus
   tempos e texto. Edite e aplique. Se o intervalo mudar, a janela pede confirmação.
   Selecionar vários trechos permite substituí-los por uma frase única.
-- **Inserir trecho**: informe texto e intervalo. Sobreposição com a legenda é
+- **Inserir nova frase**: informe texto e intervalo. Sobreposição com a legenda é
   rejeitada e identifica o conflito; não se deslocam automaticamente os vizinhos.
 - **Descartar pendência**: ignora aquela consulta do TXT; não apaga nenhum SRT.
-- **Revisar depois**: conserva a pendência e o rascunho.
-- **Remover trechos selecionados**: exclusão explícita da versão validada,
+- **Decidir depois**: conserva a pendência e o rascunho.
+- **Remover da legenda**: exclusão explícita da versão validada,
   separada do descarte e com confirmação.
 
 **Desfazer última decisão** restaura texto, tempos e associações da operação
@@ -45,11 +54,11 @@ repetição e botões para marcar início/fim na posição atual. O cursor usa o
 de saída do dispositivo, com compensação do buffer, não o tempo de abertura da janela.
 
 Os campos aceitam segundos (`102.9`), `mm:ss,mmm` ou `hh:mm:ss,mmm`.
-**Sugerir tempos neste intervalo** executa o WhisperX em um processo separado,
+**Buscar tempos na voz** executa o WhisperX em um processo separado,
 cancelável. Os resultados aparecem para conferência; falhas e palavras sem tempo
 permanecem visíveis. Pontuação do modelo não representa aprovação humana.
 
-Em **Tempos por palavra**, use duplo clique nas células para incluir/excluir,
+Em **Ajuste avançado: tempos por palavra**, use duplo clique nas células para incluir/excluir,
 editar início/fim ou confirmar. É possível selecionar várias palavras para
 ouvi-las com contexto e confirmar seus tempos. **Marcar grupo no intervalo**
 distribui tempos aproximados para facilitar a edição: esses tempos precisam ser
@@ -58,24 +67,28 @@ quando já houver tempos confirmados.
 
 Para resolver um conflito dividindo um trecho: carregue-o, selecione a primeira
 palavra da segunda parte, posicione o áudio no corte e escolha **Dividir trecho
-aqui**. As duas partes continuam editáveis. Nenhuma parte é removida implicitamente.
+no cursor**. As duas partes continuam editáveis. Nenhuma parte é removida implicitamente.
 
 ## Arquivos e continuidade
 
 - `letra_consolidada.srt` e seu JSON continuam sendo a saída automática.
+- Na publicação, cada bloco consolidado ou validado recebe a primeira letra
+  maiúscula e todas as demais minúsculas, inclusive nomes próprios e siglas.
+  Aspas, pontuação, acentos e tempos são preservados. O manifesto de palavras
+  acompanha essa grafia sem alterar os tempos confirmados nem o histórico.
 - `revisao_letra.json` guarda decisões, rascunhos, histórico, hashes das fontes,
   palavras confirmadas e resumo das pendências. Cada decisão válida é salva.
-- **Publicar e continuar** gera `letra_validada.srt` e `letra_validada.json`.
+- **Publicar legenda e continuar** gera `letra_validada.srt` e `letra_validada.json`.
   O segundo é o manifesto consumido pelo alinhamento; não o remova ao usar tempos
   por palavra. Esses arquivos ficam na pasta da música, fora dos temporários.
-- **Salvar e continuar depois** encerra a conversão atual. Ao retomar, as decisões
+- **Salvar e sair por enquanto** encerra a conversão atual. Ao retomar, as decisões
   reaparecem. Fechar a janela tem o mesmo efeito.
 - É permitido continuar com pendências. Rascunhos ainda não aplicados não entram
   no SRT. Uma edição inválida não impede usar os trechos válidos existentes.
 
 Se TXT, SRT, voz ou consolidação mudarem, a revisão antiga é arquivada no JSON.
 A janela inicia sobre as fontes atuais, sem reaplicar decisões antigas. Consulte
-**Histórico / versões anteriores** e reaplique explicitamente o que continuar
+**Histórico e versões anteriores** e reaplique explicitamente o que continuar
 correto. Se as fontes mudarem durante a edição, a publicação pede reabertura.
 
 O manifesto vincula os tempos ao hash do SRT publicado e ao áudio. Uma gravação

@@ -12,14 +12,11 @@ from pathlib import Path
 
 # Critérios experimentais, não uma escala clínica/pedagógica universal.
 # Aumentar estes referenciais torna a classificação menos exigente.
-REFERENCIA_TOTAL_NOTAS = 400
-REFERENCIA_NOTAS_POR_SEGUNDO = 4.0
 PITCH_BASE = 60             # C4
 PITCH_AGUDO = 84            # C6
-PERCENTIL_AGUDO = 0.90      # ponderado pelo tempo cantado
-PESO_QUANTIDADE = 0.15
-PESO_DENSIDADE = 0.40
-PESO_AGUDOS = 0.45
+REFERENCIA_ALTURAS_DISTINTAS = 12  # alturas MIDI absolutas, incluindo oitavas
+PESO_VARIEDADE = 0.15
+PESO_PICO = 0.85
 LIMIAR_INTERMEDIATE = 0.35
 LIMIAR_ADVANCED = 0.65
 
@@ -154,28 +151,36 @@ def escrever_srt(caminho, notas, eventos):
 
 
 def avaliar_dificuldade(eventos):
+    """Pico vocal (85%) e variedade de alturas (15%), sem contar sílabas.
+
+    Dividir uma nota em várias ocorrências da mesma altura não muda o score.
+    O pico é o máximo presente no MIDI; a estimativa depende da precisão
+    do pitch exportado e usa uma referência absoluta, não a tessitura pessoal.
+    """
     if not eventos:
         raise ValueError("Não é possível avaliar um MIDI vazio.")
+    if any(not math.isfinite(n.start) or not math.isfinite(n.end) or n.end <= n.start
+           or not math.isfinite(n.pitch) or not 0 <= n.pitch <= 127 or int(n.pitch) != n.pitch
+           for n in eventos):
+        raise ValueError('Evento MIDI com altura ou duração inválida.')
     duracao = sum(n.end - n.start for n in eventos)
-    if duracao <= 0:
-        raise ValueError("Duração de canto inválida.")
-    acumulado = 0.0
-    agudo = max(n.pitch for n in eventos)
-    for n in sorted(eventos, key=lambda n: n.pitch):
-        acumulado += n.end - n.start
-        if acumulado >= duracao * PERCENTIL_AGUDO:
-            agudo = n.pitch
-            break
-    densidade = len(eventos) / duracao
+    alturas = sorted({int(n.pitch) for n in eventos})
+    pico = alturas[-1]
     limitar = lambda x: min(1.0, max(0.0, x))
-    score = (PESO_QUANTIDADE * limitar(len(eventos) / REFERENCIA_TOTAL_NOTAS)
-             + PESO_DENSIDADE * limitar(densidade / REFERENCIA_NOTAS_POR_SEGUNDO)
-             + PESO_AGUDOS * limitar((agudo - PITCH_BASE) / (PITCH_AGUDO - PITCH_BASE)))
+    componente_pico = limitar((pico - PITCH_BASE) / (PITCH_AGUDO - PITCH_BASE))
+    componente_variedade = limitar((len(alturas) - 1) / (REFERENCIA_ALTURAS_DISTINTAS - 1))
+    score = PESO_PICO * componente_pico + PESO_VARIEDADE * componente_variedade
     dificuldade = ("advanced" if score >= LIMIAR_ADVANCED else
                    "intermediate" if score >= LIMIAR_INTERMEDIATE else "beginner")
-    diagnostico = {"criterio": "heuristica_v1", "total_notas": len(eventos),
-                  "segundos_cantados": duracao, "notas_por_segundo": densidade,
-                  "pitch_percentil_90_por_duracao": agudo, "score": score}
+    diagnostico = {"criterio": "heuristica_v2_pico_e_variedade", "total_notas": len(eventos),
+                  "segundos_cantados": duracao, "alturas_distintas": alturas,
+                  "total_alturas_distintas": len(alturas), "pitch_pico": pico,
+                  "componente_pico": componente_pico, "componente_variedade": componente_variedade,
+                  "peso_pico": PESO_PICO, "peso_variedade": PESO_VARIEDADE,
+                  "pitch_base": PITCH_BASE, "pitch_agudo_referencia": PITCH_AGUDO,
+                  "referencia_alturas_distintas": REFERENCIA_ALTURAS_DISTINTAS,
+                  "limiares": {"intermediate": LIMIAR_INTERMEDIATE, "advanced": LIMIAR_ADVANCED},
+                  "score": score}
     return dificuldade, diagnostico
 
 

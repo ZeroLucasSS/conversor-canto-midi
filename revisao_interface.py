@@ -13,12 +13,15 @@ import tempfile
 import threading
 from pathlib import Path
 import tkinter as tk
+import customtkinter as ctk
 from tkinter import ttk, messagebox, simpledialog
+from painel_revisao import montar_interface
+from estilo_revisao import BRANCO, texto_editavel
 
 from revisao_letra import SessaoRevisao, formatar_tempo, tempo, palavras_editor
 
 
-class JanelaRevisao(tk.Toplevel):
+class JanelaRevisao(ctk.CTkToplevel):
     def __init__(self, parent, sessao, ao_fechar=None):
         super().__init__(parent)
         self.sessao = sessao
@@ -35,111 +38,7 @@ class JanelaRevisao(tk.Toplevel):
         self.mapa_itens = {}
         self.zoom = (0., sessao.duracao)
         self.audio = None
-        self.title('Revisão da letra — ' + sessao.pasta.name)
-        self.geometry('1180x860')
-        self.minsize(960, 720)
-        self.protocol('WM_DELETE_WINDOW', self.salvar_sair)
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
-        self.resumo = tk.StringVar()
-        ttk.Label(self, textvariable=self.resumo).grid(row=0, column=0, sticky='ew', padx=10, pady=5)
-        panes = ttk.Panedwindow(self, orient='horizontal')
-        panes.grid(row=1, column=0, sticky='nsew', padx=10)
-        esquerda = ttk.Frame(panes)
-        area = ttk.Frame(panes)
-        canvas = tk.Canvas(area, highlightthickness=0)
-        scroll = ttk.Scrollbar(area, command=canvas.yview)
-        scroll.pack(side='right', fill='y')
-        canvas.pack(side='left', fill='both', expand=True)
-        canvas.configure(yscrollcommand=scroll.set)
-        direita = ttk.Frame(canvas)
-        janela_canvas = canvas.create_window((0,0), window=direita, anchor='nw')
-        direita.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
-        canvas.bind('<Configure>', lambda e: canvas.itemconfigure(janela_canvas, width=e.width))
-        panes.add(esquerda, weight=1)
-        panes.add(area, weight=3)
-        ttk.Label(esquerda, text='Ocorrências do TXT e trechos da legenda').pack(anchor='w')
-        self.lista = self._criar_tabela(esquerda, columns=('estado',), show='tree headings', selectmode='browse')
-        self.lista.heading('#0', text='Frase / ocorrência')
-        self.lista.heading('estado', text='Decisão')
-        self.lista.column('#0', width=250)
-        self.lista.column('estado', width=80, stretch=False)
-        self.lista.bind('<<TreeviewSelect>>', self.selecionar_item)
-        ttk.Button(esquerda, text='Histórico / versões anteriores', command=self.historico).pack(fill='x', pady=3)
-        ttk.Button(esquerda, text='Desfazer última decisão', command=self.desfazer).pack(fill='x')
-
-        self.contexto = tk.Text(direita, height=5, wrap='word', state='disabled')
-        self.contexto.pack(fill='x')
-        ttk.Label(direita, text='Legenda atual (Ctrl/Shift: vários trechos; duplo clique: carregar para edição)').pack(anchor='w')
-        self.trechos = self._criar_tabela(direita, expand=False, columns=('tempo', 'texto'), show='headings', height=5)
-        self.trechos.heading('tempo', text='Início — fim')
-        self.trechos.heading('texto', text='Texto')
-        self.trechos.column('tempo', width=165, stretch=False)
-        self.trechos.column('texto', width=420)
-        self.trechos.bind('<Double-1>', lambda e: self.carregar_trecho())
-
-        faixa = ttk.Frame(direita)
-        faixa.pack(fill='x', pady=4)
-        for rotulo, fn in [('▶ / Pausa', self.play), ('−3 s', lambda: self.pular(-3)),
-                           ('+3 s', lambda: self.pular(3)), ('Ouvir intervalo', self.ouvir_intervalo),
-                           ('Zoom intervalo', self.zoom_intervalo), ('Áudio inteiro', self.zoom_total)]:
-            ttk.Button(faixa, text=rotulo, command=fn).pack(side='left')
-        self.repetir = tk.BooleanVar(value=False)
-        ttk.Checkbutton(faixa, text='Repetir', variable=self.repetir).pack(side='left')
-        self.relogio = tk.StringVar(value='Carregando voz…')
-        ttk.Label(direita, textvariable=self.relogio).pack(anchor='w')
-        self.onda = tk.Canvas(direita, height=90, background='#111827', highlightthickness=0)
-        self.onda.pack(fill='x')
-        self.onda.bind('<Configure>', lambda e: self.desenhar_onda())
-        self.onda.bind('<Button-1>', self.inicio_selecao)
-        self.onda.bind('<B1-Motion>', self.arrastar_selecao)
-        self.onda.bind('<ButtonRelease-1>', self.fim_selecao)
-        ttk.Label(direita, text='Clique: buscar no áudio. Arraste: selecionar intervalo. Tempos em mm:ss,mmm ou segundos.').pack(anchor='w')
-        limites = ttk.Frame(direita)
-        limites.pack(fill='x')
-        self.inicio = tk.StringVar(value='0')
-        self.fim = tk.StringVar(value='0')
-        for label, var in [('Início', self.inicio), ('Fim', self.fim)]:
-            ttk.Label(limites, text=label).pack(side='left')
-            ttk.Entry(limites, textvariable=var, width=13).pack(side='left', padx=3)
-            ttk.Button(limites, text='Marcar ' + label.lower(), command=lambda v=var: self.marcar(v)).pack(side='left')
-        self.texto = tk.Text(direita, height=2, wrap='word')
-        self.texto.pack(fill='x', pady=4)
-        linha = ttk.Frame(direita)
-        linha.pack(fill='x')
-        self.avancado = tk.BooleanVar(value=False)
-        ttk.Checkbutton(linha, text='Tempos por palavra', variable=self.avancado, command=self.mostrar_avancado).pack(side='left')
-        self.botao_alinhar = ttk.Button(linha, text='Sugerir tempos neste intervalo', command=self.alinhar)
-        self.botao_alinhar.pack(side='left')
-        ttk.Button(linha, text='Cancelar busca', command=self.cancelar_busca).pack(side='left')
-        self.painel_palavras = ttk.Frame(direita)
-        ttk.Label(self.painel_palavras, text='Duplo clique para editar. ✓ confirmado = tempo preservado na conversão; sugestão não confirmada é só referência.').pack(anchor='w')
-        self.tabela = self._criar_tabela(self.painel_palavras, expand=False, columns=('usar', 'texto', 'inicio', 'fim', 'confirmado', 'score'),
-                                   show='headings', height=5, selectmode='extended')
-        for campo, label, largura in [('usar', 'Incluir', 50), ('texto', 'Palavra', 130), ('inicio', 'Início', 100),
-                                       ('fim', 'Fim', 100), ('confirmado', 'Confirmado', 80), ('score', 'Modelo', 70)]:
-            self.tabela.heading(campo, text=label)
-            self.tabela.column(campo, width=largura)
-        self.tabela.bind('<Double-1>', self.editar_palavra)
-        botoes = ttk.Frame(self.painel_palavras)
-        botoes.pack(fill='x')
-        for label, fn in [('Recriar tabela', self.recriar_palavras), ('Ouvir palavras', self.ouvir_palavras),
-                          ('Confirmar selecionadas', self.confirmar_palavras), ('Marcar grupo no intervalo', self.marcar_grupo),
-                          ('Dividir trecho aqui', self.dividir)]:
-            ttk.Button(botoes, text=label, command=fn).pack(side='left')
-        acoes = ttk.Frame(direita)
-        acoes.pack(fill='x', pady=5)
-        for n, (label, acao) in enumerate([('Já está na legenda', 'associar'), ('Corrigir / substituir seleção', 'corrigir'),
-                       ('Inserir trecho', 'inserir'), ('Descartar pendência', 'descartar'), ('Revisar depois', 'depois'),
-                       ('Remover trechos selecionados…', 'remover')]):
-            ttk.Button(acoes, text=label, command=lambda a=acao: self.aplicar(a)).grid(row=n//3, column=n%3, sticky='ew', padx=2, pady=2)
-            acoes.columnconfigure(n%3, weight=1)
-        self.status = tk.StringVar(value='Selecione uma ocorrência. Associar nunca insere nem duplica palavras.')
-        ttk.Label(self, textvariable=self.status, wraplength=920).grid(row=2, column=0, sticky='ew', padx=10, pady=4)
-        rodape = ttk.Frame(self)
-        rodape.grid(row=3, column=0, sticky='ew', padx=10, pady=8)
-        ttk.Button(rodape, text='Salvar e continuar depois', command=self.salvar_sair).pack(side='left')
-        ttk.Button(rodape, text='Publicar e continuar (mesmo com pendências)', command=self.continuar).pack(side='right')
+        montar_interface(self)
         self.atualizar_listas()
         if sessao.reconciliar:
             self.status.set('As fontes mudaram: decisões antigas foram arquivadas e não serão aplicadas. Consulte o histórico e confirme novamente nos trechos atuais.')
@@ -148,16 +47,40 @@ class JanelaRevisao(tk.Toplevel):
 
     @staticmethod
     def _criar_tabela(parent, expand=True, **opcoes):
-        frame = ttk.Frame(parent)
-        frame.pack(fill='both' if expand else 'x', expand=expand)
+        frame = tk.Frame(parent, background=BRANCO)
+        frame.pack(fill='both' if expand else 'x', expand=expand, padx=4, pady=4)
         # Criar a tabela DENTRO do frame. pack(in_=...) só muda o gerente
         # de geometria; não muda o pai nem impede um frame irmão de cobri-la.
-        tree = ttk.Treeview(frame, **opcoes)
+        tree = ttk.Treeview(frame, style='Revisao.Treeview', **opcoes)
+        horizontal = ctk.CTkScrollbar(frame, orientation='horizontal', command=tree.xview,
+                                      fg_color=BRANCO, button_color='#cbd5e1', button_hover_color='#94a3b8', height=12)
+        horizontal.pack(side='bottom', fill='x')
         tree.pack(side='left', fill='both', expand=True)
-        scroll = ttk.Scrollbar(frame, command=tree.yview)
+        scroll = ctk.CTkScrollbar(frame, command=tree.yview, fg_color=BRANCO,
+                                  button_color='#cbd5e1', button_hover_color='#94a3b8', width=12)
         scroll.pack(side='right', fill='y')
-        tree.configure(yscrollcommand=scroll.set)
+        tree.configure(yscrollcommand=scroll.set, xscrollcommand=horizontal.set)
         return tree
+
+    def filtrar_lista(self, valor=None):
+        self.guardar_rascunho()
+        self.item = None
+        self.atualizar_listas()
+        if self.lista.get_children():
+            self.lista.selection_set(self.lista.get_children()[0])
+
+    def proxima_pendencia(self):
+        ids = [i['id'] for i in self.sessao.pendentes]
+        if not ids:
+            self.status.set('Todas as ocorrências foram decididas. Você pode conferir a legenda completa ou publicar.')
+            return
+        atual = self.item['id'] if self.item else None
+        proxima = ids[(ids.index(atual) + 1) % len(ids)] if atual in ids else ids[0]
+        if self.filtro.get() != 'Revisões':
+            self.filtro.set('Revisões')
+            self.filtrar_lista()
+        self.lista.selection_set(proxima)
+        self.lista.see(proxima)
 
     def erro(self, erro):
         self.status.set(str(erro))
@@ -171,14 +94,21 @@ class JanelaRevisao(tk.Toplevel):
             self.mapa_itens[i['id']] = i
             estado = self.sessao.dados['decisoes'].get(i['id'], {}).get('acao', 'pendente')
             local = f"TXT linha {i['linha']}: " if i['tipo'] == 'txt' else 'SRT: '
-            self.lista.insert('', 'end', iid=i['id'], text=local+i['texto'], values=(estado,))
+            nomes = {'pendente': 'A revisar', 'associar': 'Associada', 'corrigir': 'Corrigida',
+                     'inserir': 'Inserida', 'descartar': 'Descartada', 'depois': 'Para depois',
+                     'remover': 'Removida', 'substituir': 'Substituída'}
+            if self.filtro.get() == 'Revisões':
+                self.lista.insert('', 'end', iid=i['id'], text=local+i['texto'], values=(nomes.get(estado, estado),))
         for b in self.sessao.blocos:
             id_item = 'editar:' + b['id']
             self.mapa_itens[id_item] = dict(id=id_item, bloco=b['id'], texto=b['texto'], motivo='Edição livre de trecho existente', tipo='srt')
-            self.lista.insert('', 'end', iid=id_item, text=formatar_tempo(b['inicio'])+' '+b['texto'], values=('legenda',))
+            if self.filtro.get() == 'Legenda completa':
+                self.lista.insert('', 'end', iid=id_item, text=formatar_tempo(b['inicio'])+' '+b['texto'], values=('Na legenda',))
             self.trechos.insert('', 'end', iid=b['id'], values=(f"{formatar_tempo(b['inicio'])} — {formatar_tempo(b['fim'])}", b['texto']))
-        self.resumo.set(f'{len(self.sessao.pendentes)} ocorrências pendentes · {len(self.sessao.blocos)} trechos publicados · '
-                       'SRT automático preservado; saída: letra_validada.srt')
+        total = len(self.sessao.pendentes)
+        rotulo = 'ocorrência' if total == 1 else 'ocorrências'
+        self.resumo.set(f'{self.sessao.pasta.name}  ·  {total} {rotulo} para revisar  ·  '
+                       f'{len(self.sessao.blocos)} trechos na legenda')
 
     def guardar_rascunho(self):
         if self.item:
@@ -237,11 +167,14 @@ class JanelaRevisao(tk.Toplevel):
         if len(bs) == 1:
             b['palavras'] = bs[0].get('palavras', [])
         self.carregar_editor(b)
+        self.ir_para(self.card_edicao)
+        self.status.set('Seleção carregada no editor. Edite o texto e use “Corrigir seleção” no passo 4.')
 
     def mostrar_avancado(self):
         if self.avancado.get():
             # Antes das ações, mantendo o rodapé sempre acessível.
-            self.painel_palavras.pack(fill='x', before=self.painel_palavras.master.winfo_children()[-1])
+            self.painel_palavras.pack(fill='x', padx=8, pady=(0, 12), before=self.acoes)
+            self.ir_para(self.painel_palavras)
         else:
             self.painel_palavras.pack_forget()
 
@@ -395,10 +328,10 @@ class JanelaRevisao(tk.Toplevel):
             self.erro(e)
 
     def historico(self):
-        janela = tk.Toplevel(self)
+        janela = ctk.CTkToplevel(self, fg_color=BRANCO)
         janela.title('Histórico de decisões — consulta')
         janela.geometry('850x550')
-        texto = tk.Text(janela, wrap='word')
+        texto = texto_editavel(janela)
         texto.pack(fill='both', expand=True)
         texto.insert('end', 'Fontes alteradas: consulte as decisões antigas e reaplique explicitamente nos trechos atuais.\n\n')
         texto.insert('end', json.dumps(dict(historico=self.sessao.dados['historico'],
@@ -476,7 +409,7 @@ class JanelaRevisao(tk.Toplevel):
         ys = envelope(self.audio[int(a*self.player.taxa):int(b*self.player.taxa)], min(w,1400))
         for i,(minimo,maximo) in enumerate(ys):
             x = i*w/max(1,len(ys))
-            self.onda.create_line(x,h/2-minimo*h*.45,x,h/2-maximo*h*.45,fill='#38bdf8')
+            self.onda.create_line(x,h/2-minimo*h*.45,x,h/2-maximo*h*.45,fill='#0284c7')
 
     def _tempo_x(self, x):
         a,b = self.zoom

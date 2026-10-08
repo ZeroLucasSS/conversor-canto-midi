@@ -289,6 +289,7 @@ class FluxoTest(unittest.TestCase):
 class InterfaceTest(unittest.TestCase):
     def test_janela_rascunho_e_associacao(self):
         import tkinter as tk
+        import customtkinter as ctk
         from revisao_interface import JanelaRevisao
         with tempfile.TemporaryDirectory() as temp:
             p=Path(temp)
@@ -298,6 +299,8 @@ class InterfaceTest(unittest.TestCase):
             except tk.TclError as erro:
                 self.skipTest(f'Tk indisponível neste ambiente: {erro}')
             root.withdraw()
+            aparencia = ctk.get_appearance_mode()
+            ctk.set_appearance_mode('Dark')
             try:
                 with patch('revisao_interface.threading.Thread.start'):
                     j=JanelaRevisao(root,SessaoRevisao(p))
@@ -320,6 +323,10 @@ class InterfaceTest(unittest.TestCase):
                 j.attributes('-alpha', 0)
                 j.deiconify()
                 root.update()
+                self.assertEqual(ctk.get_appearance_mode(), 'Dark')
+                self.assertEqual(j.cget('fg_color'), '#ffffff')
+                self.assertEqual(j.texto.cget('background'), '#ffffff')
+                self.assertEqual(set(j.botoes_decisao), {'associar', 'corrigir', 'inserir', 'descartar', 'depois', 'remover'})
                 for tabela in (j.lista, j.trechos, j.tabela):
                     self.assertTrue(tabela.winfo_ismapped())
                     primeira = tabela.get_children()[0]
@@ -331,6 +338,23 @@ class InterfaceTest(unittest.TestCase):
                 root.update()
                 self.assertEqual(j.lista.selection(), (item,))
                 self.assertIn('Livre para voar', j.contexto.get('1.0', 'end'))
+                # Trocar para a legenda completa mantém o rascunho da frase.
+                j.texto.delete('1.0', 'end')
+                j.texto.insert('1.0', 'Rascunho preservado')
+                j.filtro.set('Legenda completa')
+                j.filtrar_lista()
+                root.update()
+                self.assertEqual(len(j.lista.get_children()), 2)
+                j.proxima_pendencia()
+                root.update()
+                self.assertEqual(j.item['id'], item)
+                self.assertEqual(j.texto.get('1.0', 'end-1c'), 'Rascunho preservado')
+                j.geometry('1000x720')
+                j.ir_para(j.acoes)
+                root.update()
+                for b in j.botoes_decisao.values():
+                    self.assertGreater(b.winfo_width(), 100)
+                    self.assertLessEqual(b.winfo_rootx()+b.winfo_width(), j.winfo_rootx()+j.winfo_width())
                 j.trechos.selection_set('srt:2')
                 j.aplicar('associar')
                 self.assertFalse(j.sessao.pendentes)
@@ -339,6 +363,7 @@ class InterfaceTest(unittest.TestCase):
                 self.assertIn(item,nova.dados['rascunhos'])
             finally:
                 root.destroy()
+                ctk.set_appearance_mode(aparencia)
 
 
 if __name__ == '__main__':

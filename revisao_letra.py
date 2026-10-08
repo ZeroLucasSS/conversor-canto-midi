@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from consolidar_letra import ler_srt, tokenizar, chave
+from normalizacao_legenda import normalizar_frase
 
 MARCA_MANUAL = "tempo_confirmado_manualmente"
 
@@ -275,12 +276,19 @@ class SessaoRevisao:
         if not self.blocos:
             raise ValueError('Não há nenhum trecho para converter.')
         self.salvar()
+        publicados = copy.deepcopy(self.blocos)
+        for b in publicados:
+            b['texto'] = normalizar_frase(' '.join(b['texto'].split()))
+            # Manifesto e SRT precisam ter a mesma grafia, inclusive quando
+            # as palavras já têm tempos humanos confirmados.
+            for p, t in zip(b.get('palavras', []), tokenizar(b['texto'])):
+                p['texto'] = t.texto
         texto = '\n\n'.join(f"{i}\n{formatar_tempo(b['inicio'], True)} --> {formatar_tempo(b['fim'], True)}\n{' '.join(b['texto'].split())}"
-                            for i, b in enumerate(self.blocos, 1)) + '\n'
+                            for i, b in enumerate(publicados, 1)) + '\n'
         destino = self.pasta / 'letra_validada.srt'
         manifesto = dict(versao=1, fontes=self.fontes, sha256_srt=hashlib.sha256(texto.encode('utf-8')).hexdigest(),
                          pendencias=len(self.pendentes), blocos={str(i): b.get('palavras', [])
-                                                               for i, b in enumerate(self.blocos, 1)})
+                                                               for i, b in enumerate(publicados, 1)})
         # O consumidor exige o hash do SRT. Uma interrupção entre os replaces
         # é detectada, nunca mistura tempos de publicações diferentes.
         fd, temp = tempfile.mkstemp(prefix='.letra_validada_', dir=self.pasta)

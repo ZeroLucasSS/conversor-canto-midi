@@ -37,6 +37,7 @@ import sys
 import tempfile
 from typing import Callable, Protocol
 import unicodedata
+from normalizacao_legenda import normalizar_frase
 
 
 PALAVRA = re.compile(r"[^\W_]+(?:['’\-][^\W_]+)*", re.UNICODE)
@@ -751,6 +752,12 @@ def publicar(relatorio, saida: Path, *, atualizar=False):
     saida.parent.mkdir(parents=True, exist_ok=True)
     # Mantém o resumo como último campo, inclusive após metadados da CLI.
     relatorio = dict(relatorio)
+    if relatorio['status'] != 'somente_comparacao':
+        relatorio['blocos'] = [dict(b, texto=normalizar_frase(b['texto'])) for b in relatorio['blocos']]
+        if 'auditoria_estrutura' in relatorio:
+            relatorio['auditoria_estrutura'] = [
+                dict(b, texto_publicado=normalizar_frase(b['texto_publicado']))
+                if 'texto_publicado' in b else dict(b) for b in relatorio['auditoria_estrutura']]
     relatorio["resumo_avisos"] = relatorio.pop("resumo_avisos", [])
     json_texto = json.dumps(relatorio, ensure_ascii=False, indent=2, allow_nan=False)
     with diagnostico.open("x", encoding="utf-8") as f:
