@@ -7,3 +7,4 @@ networkx==3.4.2
 sympy==1.14.0
 typing_extensions==4.16.0
 -r requirements_consolidacao.txt
+-r requirements_revisao.txt

@@ -129,6 +129,8 @@ def ajustar_tempos_midi(notas, evidencia, duracao_audio):
             raise ValueError('Notas sobrepostas antes do ajuste de duração.')
     if cfg.ALONGAR_FINAL_FRASE_MIDI:
         for i, n in enumerate(resultado):
+            if 'tempo_confirmado_manualmente' in n.motivos_revisao:
+                continue
             proxima = resultado[i + 1] if i + 1 < len(resultado) else None
             if proxima is not None and proxima.bloco_indice == n.bloco_indice:
                 continue

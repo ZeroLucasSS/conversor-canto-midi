@@ -277,7 +277,8 @@ def _salvar_conjunto(origens: tuple[Path, Path, Path], pasta: Path, nome: str,
 
 
 def converter(pasta: Path, nome: str, cancelar: Event,
-              emitir: Callable[[str, str], None], *, projeto: Path | None = None) -> ResultadoConversao:
+              emitir: Callable[[str, str], None], *, projeto: Path | None = None,
+              revisar=None) -> ResultadoConversao:
     """Consolida a letra, alinha sílabas e gera o conjunto MIDI.
 
     emitir recebe ('etapa', texto) ou ('log', texto). Não acessa widgets.
@@ -303,8 +304,28 @@ def converter(pasta: Path, nome: str, cancelar: Event,
         if not consolidada.is_file() or not consolidada.stat().st_size:
             raise RuntimeError("A consolidação não produziu nenhum trecho com tempo utilizável.")
         emitir("log", f"\nLetra consolidada: {consolidada}\nAvisos: {consolidada.with_suffix('.json')}\n")
+        fonte_srt, manifesto = consolidada, None
+        if revisar is not None:
+            from revisao_letra import SessaoRevisao
+            sessao = SessaoRevisao(pasta, fontes['voz'])
+            if sessao.pendentes or sessao.reconciliar:
+                emitir('etapa', 'Revisão da letra · aguardando validação manual')
+                resposta = revisar(sessao)
+                if resposta is None or cancelar.is_set():
+                    raise ConversaoCancelada()
+                fonte_srt, manifesto = resposta
+            else:
+                fonte_srt, manifesto = sessao.publicar()
+            emitir('log', f'Letra validada: {fonte_srt}\nPendências mantidas: {len(sessao.pendentes)}\n')
+        elif (pasta / 'revisao_letra.json').exists():
+            from revisao_letra import SessaoRevisao
+            sessao = SessaoRevisao(pasta, fontes['voz'])
+            if sessao.reconciliar:
+                raise RuntimeError('As fontes da revisão mudaram. Abra a janela de revisão antes de converter.')
+            fonte_srt, manifesto = sessao.publicar()
         tarefas = [_Tarefa(projeto / "preparar_letra.py",
-                           [str(pasta), "--srt", str(consolidada), "--saida", str(alinhamento)],
+                           [str(pasta), "--srt", str(fonte_srt), "--saida", str(alinhamento),
+                            *(['--revisao', str(manifesto)] if manifesto else [])],
                            trabalho / "alinhamento.log")]
         # A análise de pitch/harmonia não depende da letra: roda junto com o
         # alinhamento quando há memória suficiente. O resultado só é usado se

@@ -42,6 +42,7 @@ class Interface:
         self.eventos = queue.Queue()
         self.cancelar = threading.Event()
         self.inicio = 0.0
+        self.janela_revisao = None
 
         janela.title("Canto MIDI — Audio-to-MIDI Studio")
         janela.geometry("860x820")
@@ -120,6 +121,10 @@ class Interface:
                                             hover_color="#3b3e50", font=("Segoe UI", 12), height=40)
         self.botao_cancelar.pack(side="left", padx=10)
 
+        self.botao_revisar = ctk.CTkButton(acoes, text="Revisar letra", command=self.revisar_manual,
+                                          state="disabled", width=115, height=40)
+        self.botao_revisar.pack(side="left")
+
         self.abrir = ctk.CTkButton(acoes, text="Abrir Pasta de Saída", command=self.abrir_pasta,
                                    state="disabled", corner_radius=8, fg_color="#272932",
                                    hover_color="#3b3e50", font=("Segoe UI", 12), height=40)
@@ -165,6 +170,10 @@ class Interface:
         self.log.configure(state="disabled")
 
     def selecionar(self):
+        if self.janela_revisao:
+            self.janela_revisao.salvar_sair()
+            if self.janela_revisao:
+                return
         pasta = filedialog.askdirectory(title="Selecione a pasta da música", parent=self.janela)
         if not pasta:
             return
@@ -178,6 +187,7 @@ class Interface:
         self.arquivos.set("Arquivos detectados: " + "  ·  ".join(p.name for p in encontrados.values()))
         self.status.set("Pronto para iniciar a conversão.")
         self.gerar.configure(state="normal")
+        self.botao_revisar.configure(state="normal")
         self.resultado = None
         self.abrir.configure(state="disabled")
         self.escolher.configure(text="Alterar pasta")
@@ -185,6 +195,10 @@ class Interface:
     def iniciar(self):
         if self.ocupado or self.pasta is None:
             return
+        if self.janela_revisao:
+            self.janela_revisao.salvar_sair()
+            if self.janela_revisao:
+                return
         try:
             nome = normalizar_nome(self.nome.get())
             validar_pasta(self.pasta)
@@ -203,6 +217,7 @@ class Interface:
         self.gerar.configure(state="disabled")
         self.abrir.configure(state="disabled")
         self.botao_cancelar.configure(state="normal")
+        self.botao_revisar.configure(state="disabled")
         
         self.barra.configure(mode="indeterminate")
         self.barra.start()
@@ -216,12 +231,42 @@ class Interface:
     def trabalhar(self, pasta: Path, nome: str):
         try:
             destino = converter(pasta, nome, self.cancelar,
-                                lambda tipo, valor: self.eventos.put((tipo, valor)))
+                                lambda tipo, valor: self.eventos.put((tipo, valor)), revisar=self.aguardar_revisao)
             self.eventos.put(("concluido", destino))
         except ConversaoCancelada:
             self.eventos.put(("cancelado", "Conversão cancelada pelo usuário."))
         except Exception as erro:
             self.eventos.put(("erro", str(erro)))
+
+    def aguardar_revisao(self, sessao):
+        pronto = threading.Event()
+        resposta = []
+        self.eventos.put(('revisao', (sessao, pronto, resposta)))
+        while not pronto.wait(.1):
+            if self.cancelar.is_set():
+                raise ConversaoCancelada()
+        return resposta[0] if resposta else None
+
+    def abrir_revisao(self, sessao, callback=None):
+        from revisao_interface import JanelaRevisao
+        def terminou(resultado):
+            self.janela_revisao = None
+            if callback:
+                callback(resultado)
+        self.janela_revisao = JanelaRevisao(self.janela, sessao, terminou)
+
+    def revisar_manual(self):
+        if self.ocupado or self.pasta is None:
+            return
+        if self.janela_revisao:
+            self.janela_revisao.lift()
+            return
+        try:
+            from revisao_letra import SessaoRevisao
+            fontes = validar_pasta(self.pasta)
+            self.abrir_revisao(SessaoRevisao(self.pasta, fontes['voz']))
+        except Exception as erro:
+            messagebox.showerror('Revisão da letra', str(erro), parent=self.janela)
 
     def atualizar(self):
         for _ in range(80):
@@ -235,6 +280,19 @@ class Interface:
                 if not self.cancelar.is_set():
                     self.status.set(valor)
                 self.registrar("\n" + valor + "\n")
+            elif tipo == 'revisao':
+                sessao, pronto, resposta = valor
+                def respondeu(resultado, pronto=pronto, resposta=resposta):
+                    resposta.append(resultado)
+                    pronto.set()
+                if self.cancelar.is_set():
+                    respondeu(None)
+                else:
+                    try:
+                        self.abrir_revisao(sessao, respondeu)
+                    except Exception as erro:
+                        self.registrar(f'Erro ao abrir revisão: {erro}\n')
+                        respondeu(None)
             else:
                 self.finalizar(tipo, valor)
                 if self.fechar_depois:
@@ -255,6 +313,7 @@ class Interface:
         self.entrada.configure(state="normal")
         self.gerar.configure(state="normal")
         self.botao_cancelar.configure(state="disabled")
+        self.botao_revisar.configure(state="normal")
         
         if tipo == "concluido":
             self.resultado = valor.midi
@@ -277,6 +336,8 @@ class Interface:
     def pedir_cancelamento(self):
         if self.ocupado:
             self.cancelar.set()
+            if self.janela_revisao:
+                self.janela_revisao.salvar_sair()
             self.status.set("Encerrando threads de conversão...")
             self.botao_cancelar.configure(state="disabled")
 
@@ -294,6 +355,10 @@ class Interface:
 
     def fechar(self):
         if not self.ocupado:
+            if self.janela_revisao:
+                self.janela_revisao.salvar_sair()
+                if self.janela_revisao:
+                    return
             self.janela.destroy()
         elif messagebox.askyesno("Conversão em andamento", "Deseja cancelar o processo e fechar a aplicação?",
                                 parent=self.janela):

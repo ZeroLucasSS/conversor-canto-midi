@@ -189,12 +189,15 @@ def criar_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument("--srt", help="SRT já preparado; se omitido, consolida letra.txt + letra.srt antes do alinhamento.")
+    parser.add_argument("--revisao", help="Manifesto letra_validada.json com tempos confirmados manualmente.")
     return parser
 
 
 def main():
     parser = criar_parser()
     argumentos = parser.parse_args()
+    if argumentos.revisao and not argumentos.srt:
+        parser.error('--revisao exige --srt apontando para a letra validada correspondente.')
 
     pasta_projeto = Path(
         __file__
@@ -234,6 +237,16 @@ def main():
         if consolidar_main(opcoes) != 0:
             raise RuntimeError("Falha na consolidação da letra; consulte os avisos acima.")
         caminho_srt = pasta_musica / "letra_consolidada.srt"
+        if (pasta_musica / 'revisao_letra.json').exists():
+            from revisao_letra import SessaoRevisao
+            sessao = SessaoRevisao(pasta_musica, caminho_voz)
+            if sessao.reconciliar:
+                raise RuntimeError('As fontes mudaram. Reabra a revisão antes de converter esta letra.')
+            caminho_srt, argumentos.revisao = sessao.publicar()
+    if caminho_srt.name == 'letra_validada.srt' and not argumentos.revisao:
+        argumentos.revisao = caminho_srt.with_suffix('.json')
+        if not argumentos.revisao.is_file():
+            raise FileNotFoundError('Falta letra_validada.json. Republique a revisão para preservar os tempos manuais.')
     hash_srt = hashlib.sha256(caminho_srt.read_bytes()).hexdigest()
     consolidacao = None
     if caminho_srt.name == "letra_consolidada.srt" and caminho_srt.with_suffix(".json").is_file():
@@ -382,6 +395,11 @@ def main():
     print("ETAPA 2 — ALINHAMENTO DAS PALAVRAS")
     print("=" * 60)
 
+    tempos_confirmados = None
+    if argumentos.revisao:
+        from revisao_letra import carregar_tempos_confirmados
+        tempos_confirmados = carregar_tempos_confirmados(argumentos.revisao, caminho_srt, caminho_voz)
+
     alinhador = AlinhadorLetraSRT(
         caminho_voz=caminho_voz,
         idioma=(
@@ -401,7 +419,7 @@ def main():
             palavras,
             avisos_alinhamento,
         ) = alinhador.alinhar(
-            blocos
+            blocos, tempos_confirmados=tempos_confirmados
         )
 
     resultado_palavras = {
@@ -542,6 +560,7 @@ def main():
     )
     resultado_completo["metadados"]["sha256_srt"] = hash_srt
     resultado_completo["metadados"]["consolidacao"] = consolidacao
+    resultado_completo["metadados"]["revisao_manual"] = str(argumentos.revisao) if argumentos.revisao else None
     salvar_json(
         pasta_saida / "alinhamento_completo.json",
         resultado_completo,

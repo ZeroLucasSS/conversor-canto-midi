@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from difflib import SequenceMatcher
 from pathlib import Path
+from dataclasses import replace
 from sustentacao import recuperar_sustentacoes
 from medicao import informar_ambiente, medir
 
@@ -105,8 +106,16 @@ class AlinhadorLetraSRT:
                 # Primeira execução (ou cache incompleto): baixa normalmente.
                 self.modelo, self.metadados_modelo = whisperx.load_align_model(**argumentos)
 
-    def alinhar(self, blocos):
+    def alinhar(self, blocos, tempos_confirmados=None):
         import whisperx
+        tempos_confirmados = tempos_confirmados or {}
+        if tempos_confirmados:
+            from revisao_letra import validar_blocos
+            validar_blocos([dict(id=str(b.indice), texto=b.texto_normalizado, inicio=b.inicio,
+                                fim=b.fim, palavras=tempos_confirmados.get(b.indice, []))
+                            for b in blocos], self.duracao_audio)
+            if not set(tempos_confirmados) <= {b.indice for b in blocos}:
+                raise ValueError('Revisão refere-se a blocos inexistentes.')
         palavras, avisos = [], []
         ordenados = sorted(blocos, key=lambda b: (b.inicio, b.ordem))
         for anterior, atual in zip(ordenados, ordenados[1:]):
@@ -135,16 +144,64 @@ class AlinhadorLetraSRT:
                 # Falha do modelo não vira evidência acústica inventada.
                 resultado = None
                 avisos.append(f"Bloco {bloco.indice}: fallback após {type(erro).__name__}: {erro}")
-            novas = self._construir_palavras_bloco(bloco, inicio, fim, resultado, len(palavras))
+            manuais = tempos_confirmados.get(bloco.indice, [])
+            novas = (self._construir_com_manuais(bloco, inicio, fim, resultado, len(palavras), manuais)
+                     if manuais else self._construir_palavras_bloco(bloco, inicio, fim, resultado, len(palavras)))
             for palavra in novas:
                 # Dados auxiliares compartilhados, fora do JSON/asdict.
                 palavra._evidencia = self.evidencia
                 palavra._avisos = avisos
-                if palavra.score < cfg.SCORE_MINIMO_PALAVRA or "fallback" in palavra.origem_tempos:
+                if palavra.origem_tempos != 'confirmado_manualmente' and (palavra.score < cfg.SCORE_MINIMO_PALAVRA or "fallback" in palavra.origem_tempos):
                     avisos.append(f"{palavra.id}: tempos/pontuação exigem revisão ({palavra.origem_tempos}).")
             palavras.extend(novas)
         recuperar_sustentacoes(palavras, self.evidencia, avisos)
         return palavras, avisos
+
+    def _construir_com_manuais(self, bloco, inicio, fim, resultado, ordem_global, manuais):
+        """Âncoras humanas particionam o espaço disponível aos demais termos.
+
+        Nada é sobrescrito após o fallback: cada região automática nasce entre
+        duas âncoras. Não pode invadir uma palavra manual nem deixar sobreposição.
+        """
+        from revisao_letra import MARCA_MANUAL
+        textos = extrair_palavras(bloco.texto_normalizado)
+        if [normalizar_palavra(t) for t in textos] != [normalizar_palavra(p['texto']) for p in manuais]:
+            raise ValueError('Tempos manuais não correspondem às palavras do bloco.')
+        palavras = []
+        k, limite = 0, inicio
+        while k < len(textos):
+            p = manuais[k]
+            if p.get('confirmado'):
+                palavra = PalavraAlinhada('', bloco.indice, k+1, ordem_global+k+1,
+                    textos[k], normalizar_palavra(textos[k]), p['inicio'], p['fim'],
+                    0., 'confirmado_manualmente', avisos=[MARCA_MANUAL])
+                # Score zero significa ausência de pontuação do modelo, não
+                # reprovação humana. Não inventar confiança acústica.
+                palavras.append(palavra)
+                limite = p['fim']
+                k += 1
+                continue
+            j = k + 1
+            while j < len(textos) and not manuais[j].get('confirmado'):
+                j += 1
+            fim_regiao = manuais[j]['inicio'] if j < len(textos) else fim
+            sub = replace(bloco, inicio=limite, fim=fim_regiao,
+                          texto_normalizado=' '.join(textos[k:j]), texto_original=' '.join(textos[k:j]))
+            def dentro(p):
+                a,b = valor_numerico_valido(p.get('start')),valor_numerico_valido(p.get('end'))
+                return a is not None and b is not None and limite <= a < b <= fim_regiao
+            modelo_local = dict(word_segments=[p for p in extrair_palavras_resultado(resultado or {}) if dentro(p)],
+                                segments=[dict(chars=[c for c in extrair_caracteres_resultado(resultado or {})
+                                                       if str(c.get('char','')).isspace() or dentro(c)])])
+            novas = self._construir_palavras_bloco(sub, limite, fim_regiao, modelo_local, ordem_global+k)
+            palavras.extend(novas)
+            limite = fim_regiao
+            k = j
+        for i,p in enumerate(palavras, 1):
+            p.id = f'b{bloco.indice}_p{i}'
+            p.ordem_no_bloco = i
+            p.ordem_global = ordem_global+i
+        return palavras
 
     def _construir_palavras_bloco(self, bloco, inicio_referencia, fim_referencia,
                                  resultado, ordem_global_inicial):

@@ -6,7 +6,8 @@ Uso (no Python que contém WhisperX):
     python consolidar_letra.py audios --somente-comparar
     python consolidar_letra.py audios --saida saida/experimento/letra_consolidada.srt
 
-O TXT deve conter a versão cantada, com repetições explícitas e sem rótulos
+O SRT determina a estrutura e as ocorrências da gravação. O TXT fornece a
+grafia e frases de referência, reutilizáveis em repetições; não use rótulos
 como [Refrão]. Linhas orientam a divisão dos novos blocos, não seus tempos.
 Sem --atualizar, saídas não sobrescrevem arquivos existentes. O fluxo integrado
 regenera letra_consolidada.srt e seu JSON, preservando TXT e SRT originais.
@@ -417,9 +418,9 @@ def aproveitar_palavras(palavras, esperadas, inicio, fim):
     return resultado
 
 
-def consolidar(blocos: list[Bloco], texto: str, alinhador: AlinhadorLocal, *,
+def _consolidar_sequencia(blocos: list[Bloco], texto: str, alinhador: AlinhadorLocal, *,
                score_minimo=0.30, margem=0.40, janela_maxima=90.0,
-               progresso: Callable[[str], None] | None = None) -> dict:
+               progresso: Callable[[str], None] | None = None, inicio_regiao=0.0) -> dict:
     """Retorna relatório completo; nunca escreve arquivos nem inventa tempos.
 
     Blocos textualmente correspondentes preservam os tempos fornecidos, exceto
@@ -491,7 +492,7 @@ def consolidar(blocos: list[Bloco], texto: str, alinhador: AlinhadorLocal, *,
             referencias = dentro
         antes = [x for x in ancoras if x["b"] <= a]
         depois = [x for x in ancoras if x["a"] >= b]
-        piso = blocos[antes[-1]["bloco"]].fim if antes else 0.0
+        piso = blocos[antes[-1]["bloco"]].fim if antes else inicio_regiao
         teto = blocos[depois[0]["bloco"]].inicio if depois else duracao
         inicio_base = blocos[referencias[0]["bloco"]].inicio if referencias and referencias[0]["a"] == a else piso
         fim_base = blocos[referencias[-1]["bloco"]].fim if referencias and referencias[-1]["b"] == b else teto
@@ -579,7 +580,7 @@ def consolidar(blocos: list[Bloco], texto: str, alinhador: AlinhadorLocal, *,
         anteriores = [c["fim"] for c in preservados if c["token_fim"] <= i]
         posteriores = [c["inicio"] for c in preservados if c["token_inicio"] >= j]
         escolhidas = escolher_tempos([estimativas.get(k, []) for k in range(i, j)],
-                                    max(anteriores, default=0), min(posteriores, default=duracao))
+                                    max(anteriores, default=inicio_regiao), min(posteriores, default=duracao))
         k = i
         while k < j:
             if escolhidas[k - i] is None:
@@ -642,11 +643,85 @@ def consolidar(blocos: list[Bloco], texto: str, alinhador: AlinhadorLocal, *,
             "blocos": candidatos, "resumo_avisos": resumo}
 
 
+def planejar_estrutura(blocos, texto):
+    """Consulta trechos CONTÍGUOS do TXT para cada ocorrência temporal do SRT.
+
+    A posição no TXT desempata ocorrências idênticas, mas nunca apaga um bloco
+    da gravação. Candidatos quase empatados com textos distintos são mantidos
+    como pendência. Limiares são heurísticos, expostos no relatório.
+    """
+    from rapidfuzz.fuzz import ratio
+    ref = tokenizar(texto)
+    normalizados = [chave(t.texto) for t in ref]
+    cursor, consultas = 0, []
+    for bloco in blocos:
+        palavras = [chave(t.texto) for t in tokenizar(bloco.texto)]
+        n = len(palavras)
+        fonte = " ".join(palavras)
+        candidatos = []
+        for a in range(len(ref)):
+            for b in range(a + max(1, n // 2), min(len(ref), a + n + max(6, n)) + 1):
+                score = ratio(fonte, " ".join(normalizados[a:b])) / 100
+                if palavras and score >= .65:
+                    # Extremidades são preferências, nunca vetos a erros como
+                    # "Diz antes" -> "Distantes".
+                    bonus = .02 * (normalizados[a] == palavras[0]) + .02 * (normalizados[b-1] == palavras[-1])
+                    candidatos.append((score + bonus, a, b))
+        aviso = None
+        escolhido = None
+        if candidatos:
+            melhor = max(x[0] for x in candidatos)
+            proximos = [x for x in candidatos if x[0] >= melhor - .025]
+            versoes = {tuple(normalizados[a:b]) for _, a, b in proximos}
+            # Um vizinho reconhecido pode distinguir variantes textuais de
+            # refrões semelhantes, sem saltar para outra parte da letra.
+            if len(versoes) > 1 and consultas and (consultas[-1]['score'] or 0) >= .85:
+                continuacoes = [x for x in proximos if x[1] == cursor]
+                if len({tuple(normalizados[a:b]) for _, a, b in continuacoes}) == 1:
+                    proximos = continuacoes
+                    versoes = {tuple(normalizados[a:b]) for _, a, b in proximos}
+            if len(versoes) == 1:
+                escolhido = min(proximos, key=lambda x: (x[1] < cursor, abs(x[1] - cursor), -x[0]))
+            else:
+                aviso = "consulta_txt_ambigua_original_preservado"
+        else:
+            aviso = "texto_exclusivo_srt_exige_revisao"
+        if escolhido:
+            _, a, b = escolhido
+            score = ratio(fonte, " ".join(normalizados[a:b])) / 100
+            cursor = b
+            consultas.append(dict(bloco_srt=bloco.indice, inicio=bloco.inicio, fim=bloco.fim,
+                                  txt_inicio=a, txt_fim=b, score=score,
+                                  texto=trecho_txt(texto, ref, a, b), aviso=None))
+        else:
+            consultas.append(dict(bloco_srt=bloco.indice, inicio=bloco.inicio, fim=bloco.fim,
+                                  txt_inicio=None, txt_fim=None, score=None,
+                                  texto=bloco.texto, aviso=aviso))
+    usados = {i for q in consultas if q["txt_inicio"] is not None
+              for i in range(q["txt_inicio"], q["txt_fim"])}
+    regioes = [dict(indices=[i], inicio=q["inicio"], fim=q["fim"],
+                    txt_inicio=q["txt_inicio"], txt_fim=q["txt_fim"], texto=q["texto"])
+               for i, q in enumerate(consultas)]
+    return dict(consultas=consultas, regioes=regioes,
+                tokens_txt_sem_correspondencia=sorted(set(range(len(ref))) - usados),
+                parametros=dict(score_consulta_minimo=.65, margem_ambiguidade=.025,
+                                bonus_por_extremidade=.02, score_contexto_minimo=.85))
+
+
+def consolidar(blocos, texto, alinhador, *, score_minimo=.30, margem=.40,
+               janela_maxima=90., progresso=None):
+    from etapas_consolidacao import consolidar_etapas
+    return consolidar_etapas(blocos, texto, alinhador, score_minimo=score_minimo,
+                             margem=margem, janela_maxima=janela_maxima, progresso=progresso)
+
+
 def _palavra_json(p):
     d = asdict(p)
     for campo in ("inicio", "fim", "score"):
         if not _numero(d[campo]):
             d[campo] = None
+        else:
+            d[campo] = float(d[campo])
     return d
 
 
@@ -726,10 +801,11 @@ def main(argv=None):
         if not args.atualizar and (saida.exists() or saida.with_suffix(".json").exists()):
             raise FileExistsError("Saída já existe; informe outro --saida.")
         texto, blocos = ler_txt(txt), ler_srt(srt)
-        fonte, ref, comparacao = preparar_comparacao(blocos, texto)
+        fonte = [t for b in blocos for t in tokenizar(b.texto)]
+        ref = tokenizar(texto)
         fontes = {"txt": _identidade(txt), "srt": _identidade(srt)}
         if args.somente_comparar:
-            relatorio = {"versao": 1, "status": "somente_comparacao", "comparacao": comparacao,
+            relatorio = {"versao": 5, "status": "somente_comparacao", "comparacao": planejar_estrutura(blocos, texto),
                          "total_palavras_txt": len(ref), "total_palavras_srt": len(fonte),
                          "blocos": [], "pendencias": [{"motivo": "analise_acustica_nao_executada"}]}
         else:

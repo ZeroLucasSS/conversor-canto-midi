@@ -1,4 +1,4 @@
-"""Contrato do consolidador; não carrega modelos nem usa a rede.
+"""Contrato do motor ac?stico de uma regi?o; não carrega modelos nem usa a rede.
 
 python -m unittest discover -s testes -p test_consolidar_letra.py -v
 """
@@ -57,7 +57,7 @@ class ConsolidacaoTest(unittest.TestCase):
     def test_grafia_pontuacao_e_quebras_preservam_tempos(self):
         blocos = [c.Bloco(1, 1, 4, "nao tenho"), c.Bloco(2, 5, 7, "medo")]
         motor = MotorGravado([])
-        r = c.consolidar(blocos, "Não\ntenho medo!", motor)
+        r = c._consolidar_sequencia(blocos, "Não\ntenho medo!", motor)
         self.assertEqual(r["status"], "consolidado")
         self.assertEqual(motor.chamadas, [])
         self.assertEqual([(b["inicio"], b["fim"]) for b in r["blocos"]], [(1, 4), (5, 7)])
@@ -68,7 +68,7 @@ class ConsolidacaoTest(unittest.TestCase):
         ps = [palavra("Bom", 1, 1.4), palavra("dia", 2, 3),
               palavra("Muito", 5, 5.5), palavra("amor", 6, 7),
               palavra("Até", 9, 9.5), palavra("logo", 10, 11)]
-        r = c.consolidar(blocos, "Bom dia\nMuito amor\nAté logo", MotorGravado(ps))
+        r = c._consolidar_sequencia(blocos, "Bom dia\nMuito amor\nAté logo", MotorGravado(ps))
         self.assertEqual(r["status"], "consolidado")
         self.assertEqual((r["blocos"][1]["inicio"], r["blocos"][1]["fim"]), (5, 7))
         self.assertEqual(sum(op["tipo"] == "ausente_srt" for op in r["comparacao"]["operacoes"]), 2)
@@ -78,7 +78,7 @@ class ConsolidacaoTest(unittest.TestCase):
         ps = [palavra("Bom", 1, 1.4), palavra("dia", 2, 3), palavra("amor", 4, 5),
               palavra("Até", 6, 7), palavra("logo", 10, 11)]
         motor = MotorGravado(ps)
-        r = c.consolidar(blocos, "Bom dia\namor\nAté logo", motor)
+        r = c._consolidar_sequencia(blocos, "Bom dia\namor\nAté logo", motor)
         self.assertEqual(r["status"], "consolidado")
         self.assertEqual(r["blocos"][0]["fim"], 3)
         self.assertEqual(r["blocos"][1]["inicio"], 4)
@@ -86,7 +86,7 @@ class ConsolidacaoTest(unittest.TestCase):
 
     def test_erros_e_pausas_nao_recebem_fallback(self):
         blocos = [c.Bloco(1, 1, 3, "Bom dia"), c.Bloco(2, 9, 11, "Até logo")]
-        r = c.consolidar(blocos, "Bom dia\namor\nAté logo", MotorGravado([]))
+        r = c._consolidar_sequencia(blocos, "Bom dia\namor\nAté logo", MotorGravado([]))
         self.assertEqual(r["status"], "pendente")
         self.assertEqual([b["texto"] for b in r["blocos"]], ["Bom dia", "Até logo"])
         self.assertTrue(any(p["motivo"] == "cobertura_textual_incompleta" for p in r["pendencias"]))
@@ -94,7 +94,7 @@ class ConsolidacaoTest(unittest.TestCase):
     def test_substituicao_exige_alinhamento(self):
         blocos = [c.Bloco(1, 1, 4, "vida bela")]
         motor = MotorGravado([palavra("vida", 1, 2), palavra("nova", 3, 4)])
-        r = c.consolidar(blocos, "vida nova", motor)
+        r = c._consolidar_sequencia(blocos, "vida nova", motor)
         self.assertEqual(r["status"], "consolidado")
         self.assertEqual(r["blocos"][0]["texto"], "vida nova")
         self.assertEqual(len(motor.chamadas), 1)
@@ -103,7 +103,7 @@ class ConsolidacaoTest(unittest.TestCase):
         blocos = [c.Bloco(1, 1, 4, "diz antes de tudo")]
         motor = MotorGravado([palavra("distantes", 1, 2), palavra("de", 2.5, 3),
                               palavra("tudo", 3, 4)])
-        r = c.consolidar(blocos, "distantes de tudo", motor)
+        r = c._consolidar_sequencia(blocos, "distantes de tudo", motor)
         self.assertEqual(r["status"], "consolidado")
         self.assertEqual(r["comparacao"]["divergencias"][0]["texto_srt"], "diz antes")
 
@@ -112,18 +112,18 @@ class ConsolidacaoTest(unittest.TestCase):
         self.assertTrue(comp["txt_ambiguos"])
         motor = MotorGravado([palavra("Meu", 1, 2), palavra("amor", 3, 4),
                               palavra("Meu", 6, 7), palavra("amor", 8, 9)])
-        r = c.consolidar([c.Bloco(1, 1, 4, "Meu amor")], "Meu amor\nMeu amor", motor)
+        r = c._consolidar_sequencia([c.Bloco(1, 1, 4, "Meu amor")], "Meu amor\nMeu amor", motor)
         self.assertEqual(r["status"], "pendente")
 
     def test_repeticoes_completas_mantem_ocorrencias(self):
         blocos = [c.Bloco(1, 1, 3, "Meu amor"), c.Bloco(2, 6, 8, "Meu amor")]
-        r = c.consolidar(blocos, "Meu amor\nMeu amor", MotorGravado([]))
+        r = c._consolidar_sequencia(blocos, "Meu amor\nMeu amor", MotorGravado([]))
         self.assertEqual(r["status"], "consolidado")
         self.assertEqual(len(r["blocos"]), 2)
 
     def test_texto_exclusivo_srt_nao_e_descartado_silenciosamente(self):
         blocos = [c.Bloco(1, 1, 3, "Bom dia"), c.Bloco(2, 5, 6, "extra")]
-        r = c.consolidar(blocos, "Bom dia", MotorGravado([]))
+        r = c._consolidar_sequencia(blocos, "Bom dia", MotorGravado([]))
         self.assertEqual(r["status"], "pendente")
         self.assertEqual(r["pendencias"][0]["motivo"], "texto_exclusivo_srt_exige_revisao")
 
@@ -132,20 +132,20 @@ class ConsolidacaoTest(unittest.TestCase):
             ("Olá\nBom dia", [palavra("Olá", .5, 1), palavra("Bom", 5, 6), palavra("dia", 7, 8)]),
             ("Bom dia\nAdeus", [palavra("Bom", 5, 6), palavra("dia", 7, 8), palavra("Adeus", 12, 13)])]:
             with self.subTest(txt=txt):
-                r = c.consolidar([c.Bloco(1, 5, 8, "Bom dia")], txt, MotorGravado(ps))
+                r = c._consolidar_sequencia([c.Bloco(1, 5, 8, "Bom dia")], txt, MotorGravado(ps))
                 self.assertEqual(r["status"], "consolidado")
 
     def test_janela_maxima_nao_forca_musica_inteira(self):
         motor = MotorGravado([])
         motor.duracao_audio = 300
-        r = c.consolidar([c.Bloco(1, 1, 4, "velho")], "novo", motor, janela_maxima=2)
+        r = c._consolidar_sequencia([c.Bloco(1, 1, 4, "velho")], "novo", motor, janela_maxima=2)
         self.assertEqual(motor.chamadas, [])
         self.assertEqual(r["status"], "pendente")
 
     def test_motor_falha_relatorio_preserva_pendencia(self):
         motor = MotorGravado([])
         with patch.object(motor, "alinhar", side_effect=RuntimeError("falha de teste")):
-            r = c.consolidar([c.Bloco(1, 1, 4, "velho")], "novo", motor)
+            r = c._consolidar_sequencia([c.Bloco(1, 1, 4, "velho")], "novo", motor)
         self.assertEqual(r["status"], "pendente")
         self.assertIn("falha de teste", r["tentativas"][0]["erro"])
 
@@ -154,7 +154,7 @@ class ConsolidacaoTest(unittest.TestCase):
         motor = MotorGravado([palavra("Bom", 7, 8), palavra("dia", 8, 9),
                               palavra("amor", 10, 11), palavra("Até", 15, 16),
                               palavra("logo", 16, 17)])
-        r = c.consolidar(blocos, "Bom dia\namor\nAté logo", motor)
+        r = c._consolidar_sequencia(blocos, "Bom dia\namor\nAté logo", motor)
         self.assertEqual(r["status"], "pendente")
         self.assertEqual(r["tentativas"][0]["erro"], "contexto_deslocado_da_referencia_srt")
 
@@ -177,7 +177,7 @@ class ConsolidacaoTest(unittest.TestCase):
             srt = p / "letra.srt"
             srt.write_text("1\n00:00:01,000 --> 00:00:04,000\nBom dia\n", encoding="utf-8")
             original = srt.read_bytes()
-            r = c.consolidar(c.ler_srt(srt), "Bom dia!", MotorGravado([]))
+            r = c._consolidar_sequencia(c.ler_srt(srt), "Bom dia!", MotorGravado([]))
             saida = p / "letra_consolidada.srt"
             c.publicar(r, saida)
             self.assertEqual(c.ler_srt(saida)[0].texto, "Bom dia!")
@@ -189,7 +189,7 @@ class ConsolidacaoTest(unittest.TestCase):
     def test_pendente_publica_srt_e_json(self):
         with tempfile.TemporaryDirectory() as pasta:
             saida = Path(pasta) / "letra_consolidada.srt"
-            r = c.consolidar([c.Bloco(1, 1, 4, "Bom dia")], "Bom dia\namor", MotorGravado([]))
+            r = c._consolidar_sequencia([c.Bloco(1, 1, 4, "Bom dia")], "Bom dia\namor", MotorGravado([]))
             c.publicar(r, saida)
             self.assertTrue(saida.exists())
             self.assertEqual(c.ler_srt(saida)[0].texto, "Bom dia")
@@ -198,7 +198,7 @@ class ConsolidacaoTest(unittest.TestCase):
     def test_score_baixo_mantem_palavra_e_frase_no_srt(self):
         motor = MotorGravado([palavra("vida", 1, 2), palavra("e", 2, 2.1, 0.0),
                               palavra("amor", 3, 4)])
-        r = c.consolidar([c.Bloco(1, 1, 4, "vida com amor")], "vida e amor", motor)
+        r = c._consolidar_sequencia([c.Bloco(1, 1, 4, "vida com amor")], "vida e amor", motor)
         self.assertEqual(r["status"], "pendente")
         self.assertEqual(r["blocos"][0]["texto"], "vida e amor")
         self.assertEqual(len(r["resumo_avisos"]), 1)
@@ -215,7 +215,7 @@ class ConsolidacaoTest(unittest.TestCase):
         for ps in ([palavra("vida", 1, 2), palavra("e", None, None), palavra("amor", 3, 4)],
                    [palavra("vida", 1, 2), palavra("amor", 3, 4)]):
             with self.subTest(ps=ps):
-                r = c.consolidar([c.Bloco(1, 1, 4, "vida com amor")], "vida e amor", MotorGravado(ps))
+                r = c._consolidar_sequencia([c.Bloco(1, 1, 4, "vida com amor")], "vida e amor", MotorGravado(ps))
                 self.assertEqual([b["texto"] for b in r["blocos"]], ["vida", "amor"])
                 self.assertTrue(any("Omitida" in a and "'e'" in a for a in r["resumo_avisos"]))
 
