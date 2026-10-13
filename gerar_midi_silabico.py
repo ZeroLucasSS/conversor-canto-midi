@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import sys
+from modos_conversao import MODOS, carregar_palavras_alinhadas
 from exportacao_final import validar_cobertura, validar_notas, exportar_complementos
 
 from pathlib import Path
@@ -227,6 +228,8 @@ def criar_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    parser.add_argument("--modo", choices=MODOS, default="silabico",
+                        help="Uma nota por sílaba (padrão) ou por palavra.")
     return parser
 
 
@@ -324,7 +327,7 @@ def main():
 
     print()
     print("=" * 60)
-    print("NOTAS POR SÍLABA")
+    print("NOTAS POR PALAVRA" if argumentos.modo == "palavras" else "NOTAS POR SÍLABA")
     print("=" * 60)
 
     print(
@@ -344,7 +347,7 @@ def main():
     (
         dados_alinhamento,
         silabas,
-    ) = carregar_silabas_alinhadas(
+    ) = (carregar_palavras_alinhadas if argumentos.modo == "palavras" else carregar_silabas_alinhadas)(
         caminho_alinhamento
     )
 
@@ -355,7 +358,7 @@ def main():
 
     from letra import ler_srt
     caminho_srt = fonte_srt_alinhamento(dados_alinhamento, pasta_musica)
-    auditoria = validar_cobertura(dados_alinhamento, ler_srt(caminho_srt))
+    auditoria = validar_cobertura(dados_alinhamento, ler_srt(caminho_srt), modo=argumentos.modo)
 
     analisador = AnalisadorNotasSilabicas(
         caminho_voz=caminho_voz,
@@ -371,9 +374,11 @@ def main():
     notas = analisador.analisar(
         silabas=silabas,
         palavras=palavras,
+        modo=argumentos.modo,
     )
 
     metadados = {
+        "modo": argumentos.modo,
         "arquivo_srt": str(caminho_srt),
         "consolidacao": dados_alinhamento.get("metadados", {}).get("consolidacao"),
         "arquivo_voz": str(
@@ -386,11 +391,12 @@ def main():
             caminho_alinhamento
         ),
         "regra": (
-            "exatamente uma nota por sílaba"
+            "exatamente uma nota por palavra" if argumentos.modo == "palavras" else "exatamente uma nota por sílaba"
         ),
         "melismas": False,
         "versao_conversor": "2.4-cobertura-srt-dificuldade",
-        "regra_duracao": "tempos silabicos com redistribuicao limitada e cauda final acustica",
+        "regra_duracao": ("tempos de palavras e cauda final acustica" if argumentos.modo == "palavras"
+                          else "tempos silabicos com redistribuicao limitada e cauda final acustica"),
         "total_notas_com_ajustes_duracao": sum(bool(n.ajustes_duracao) for n in notas),
         "versao_alinhamento": dados_alinhamento.get("metadados", {}).get("versao_alinhador"),
         "total_palavras_com_recuperacao": dados_alinhamento.get("metadados", {}).get("total_palavras_com_recuperacao", 0),
@@ -399,12 +405,12 @@ def main():
     }
 
     if len(notas) != len(silabas):
-        raise RuntimeError("A quantidade de notas não corresponde à quantidade de sílabas.")
+        raise RuntimeError("A quantidade de notas não corresponde à quantidade de unidades alinhadas.")
     validar_notas(silabas, notas)
     # Primeiro valida/exporta o MIDI. Falhas não publicam um relatório de sucesso.
-    gerar_midi_silabico(notas=notas, caminho_saida=caminho_midi)
+    gerar_midi_silabico(notas=notas, caminho_saida=caminho_midi, modo=argumentos.modo)
     metadados["auditoria_cobertura"] = auditoria
-    metadados["avaliacao_dificuldade"] = exportar_complementos(caminho_midi, silabas, notas)
+    metadados["avaliacao_dificuldade"] = exportar_complementos(caminho_midi, silabas, notas, modo=argumentos.modo)
     salvar_notas_json(caminho=caminho_json, notas=notas, metadados=metadados)
     salvar_notas_csv(caminho=caminho_csv, notas=notas)
 
@@ -416,11 +422,11 @@ def main():
 
     print()
     print("=" * 60)
-    print("MIDI SILÁBICO CONCLUÍDO")
+    print("MIDI POR PALAVRAS CONCLUÍDO" if argumentos.modo == "palavras" else "MIDI SILÁBICO CONCLUÍDO")
     print("=" * 60)
 
     print(
-        f"Sílabas processadas: {len(silabas)}"
+        f"Unidades processadas ({argumentos.modo}): {len(silabas)}"
     )
 
     print(

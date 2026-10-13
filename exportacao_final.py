@@ -27,7 +27,7 @@ def _unicos(itens, campo, rotulo):
         raise ValueError(f"{rotulo}: {campo} ausente ou duplicado.")
 
 
-def validar_cobertura(dados: dict, blocos_fonte=None) -> dict:
+def validar_cobertura(dados: dict, blocos_fonte=None, *, modo="silabico") -> dict:
     """Confere cada ocorrência, inclusive palavras repetidas, em cada bloco.
 
     blocos_fonte pode receber a leitura do SRT original para evitar validar
@@ -36,12 +36,15 @@ def validar_cobertura(dados: dict, blocos_fonte=None) -> dict:
     from letra import Silabificador, extrair_palavras, normalizar_palavra
     from config_alinhamento import IDIOMA_SILABIFICACAO
 
+    from modos_conversao import validar_modo
+    validar_modo(modo)
     blocos = (list(blocos_fonte) if blocos_fonte is not None else dados.get("blocos"))
-    palavras, silabas = dados.get("palavras"), dados.get("silabas")
+    palavras = dados.get("palavras")
+    silabas = [] if modo == "palavras" else dados.get("silabas")
     if not all(isinstance(x, list) for x in (blocos, palavras, silabas)):
         raise ValueError("Auditoria exige listas de blocos, palavras e sílabas.")
     blocos = [b.para_dict() if hasattr(b, "para_dict") else b for b in blocos]
-    if not palavras or not silabas:
+    if not palavras or (modo == "silabico" and not silabas):
         raise ValueError("A letra não produziu palavras e sílabas para converter.")
     _unicos(blocos, "indice", "Blocos")
     _unicos(palavras, "id", "Palavras")
@@ -67,6 +70,8 @@ def validar_cobertura(dados: dict, blocos_fonte=None) -> dict:
             raise ValueError(f"Cobertura incompleta/ordem inválida no bloco {b['indice']}.")
         if [limpar(p["texto"]) for p in presentes] != esperadas:
             raise ValueError(f"Palavras diferentes do SRT no bloco {b['indice']}.")
+    if modo == "palavras":
+        return {"palavras_verificadas": len(palavras)}
     idioma = dados.get("metadados", {}).get("idioma_silabificacao", IDIOMA_SILABIFICACAO)
     separador = Silabificador(idioma)
     for p in palavras:
@@ -184,11 +189,13 @@ def avaliar_dificuldade(eventos):
     return dificuldade, diagnostico
 
 
-def exportar_complementos(caminho_midi, silabas, notas):
+def exportar_complementos(caminho_midi, silabas, notas, *, modo="silabico"):
+    from modos_conversao import sufixo_srt
+    unidade = sufixo_srt(modo)
     validar_notas(silabas, notas)
     ordenadas, eventos = reler_midi_validado(caminho_midi, notas)
     midi = Path(caminho_midi)
-    srt = midi.with_name(midi.stem + "_silabas.srt")
+    srt = midi.with_name(midi.stem + f"_{unidade}.srt")
     metadata = midi.with_name(midi.stem + "_metadata.json")
     dificuldade, diagnostico = avaliar_dificuldade(eventos)
     escrever_srt(srt, ordenadas, eventos)
@@ -196,8 +203,8 @@ def exportar_complementos(caminho_midi, silabas, notas):
         "title": "", "artist": "", "difficulty": dificuldade,
         "language": "pt-BR", "offset": 0, "lyricsOffset": 0,
     }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"Cobertura confirmada: {len(silabas)} sílabas / {len(eventos)} notas / {len(eventos)} legendas.")
+    print(f"Cobertura confirmada: {len(silabas)} {unidade} / {len(eventos)} notas / {len(eventos)} legendas.")
     print(f"Dificuldade estimada: {dificuldade} (score {diagnostico['score']:.3f}).")
     print("Observação: cobertura completa não comprova a precisão acústica das notas estimadas.")
-    print(f"SRT silábico: {srt}\nMetadados: {metadata}")
+    print(f"SRT: {srt}\nMetadados: {metadata}")
     return diagnostico

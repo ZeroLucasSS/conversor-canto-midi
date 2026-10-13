@@ -1205,6 +1205,10 @@ class AnalisadorNotasSilabicas:
             ),
         ]
 
+        if silaba.get("unidade") == "palavra":
+            # Uma palavra usa todos os seus frames, sem emprestar voz dos vizinhos.
+            tentativas = [("palavra_completa", inicio_silaba, fim_silaba)]
+
         valores = np.array(
             [],
             dtype=float,
@@ -1595,7 +1599,10 @@ class AnalisadorNotasSilabicas:
         palavras: Optional[
             list[dict[str, Any]]
         ] = None,
+        *, modo="silabico",
     ) -> list[NotaSilabica]:
+        from modos_conversao import validar_modo
+        validar_modo(modo)
         mapa_palavras = {}
 
         if palavras:
@@ -1730,6 +1737,22 @@ class AnalisadorNotasSilabicas:
 
             motivos_revisao = list(dict.fromkeys(silaba.get("avisos", [])))
 
+            if modo == "palavras":
+                valores, pesos = dados_voz.valores_midi, dados_voz.pesos
+                if len(valores) < FRAMES_VOCAIS_MINIMOS:
+                    motivos_revisao.append("poucos frames vocais na palavra")
+                # Uma segunda região distante, com >=20% do peso vocal,
+                # indica que uma única nota pode omitir movimento melódico.
+                if len(valores) and np.sum(pesos) > 0:
+                    distantes = np.abs(valores - dados_voz.centro_vocal) >= 1.5
+                    if np.sum(pesos[distantes]) / np.sum(pesos) >= 0.20:
+                        motivos_revisao.append("palavra com múltiplas alturas relevantes")
+                mascara = ((self.tempos >= inicio_silaba) & (self.tempos < fim_silaba))
+                validos = np.flatnonzero(mascara & np.isfinite(self.midi_decimal)
+                                        & (self.voiced_prob >= VOICED_PROB_MIN_NOTAS))
+                if len(validos) > 1 and np.max(np.diff(self.tempos[validos])) > 0.150:
+                    motivos_revisao.append("intervalo interno sem F0 vocal; revisar duração da palavra")
+
             if (
                 confianca_final
                 < CONFIANCA_MINIMA_SEM_REVISAO
@@ -1742,7 +1765,7 @@ class AnalisadorNotasSilabicas:
                 dados_voz.quantidade_frames == 0
             ):
                 motivos_revisao.append(
-                    "sílaba sem F0 vocal confiável"
+                    "palavra sem F0 vocal confiável" if modo == "palavras" else "sílaba sem F0 vocal confiável"
                 )
 
             if (

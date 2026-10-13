@@ -11,8 +11,10 @@ import time
 import customtkinter as ctk
 from pathlib import Path
 from tkinter import filedialog, messagebox
+from dialogo_idioma import escolher_idioma
 
-from conversao_gui import ConversaoCancelada, converter, normalizar_nome, validar_pasta
+from conversao_gui import (ConversaoCancelada, converter, normalizar_nome, validar_pasta,
+                           estado_pasta, gerar_srt_independente)
 
 # Configurações do Tema
 ctk.set_appearance_mode("Dark")
@@ -103,12 +105,23 @@ class Interface:
                                     text_color=TEXT_MAIN, font=("Segoe UI", 12))
         self.entrada.grid(row=1, sticky="ew", padx=10, pady=(8, 6))
 
-        ctk.CTkLabel(card_saida, text="Letra consolidada, MIDI, SRT silábico e relatórios serão salvos na pasta de origem.",
+        ctk.CTkLabel(card_saida, text="MIDI e SRT na pasta de origem. Resultados anteriores ficam em historico_conversoes.",
                      font=("Segoe UI", 11), text_color=TEXT_MUTED).grid(row=2, sticky="w", padx=10)
+
+        self.modo = ctk.StringVar(value="Silábico")
+        self.seletor_modo = ctk.CTkSegmentedButton(
+            card_saida, values=["Silábico", "Por palavras"], variable=self.modo)
+        self.seletor_modo.grid(row=3, sticky="ew", padx=10, pady=(8, 4))
+        ctk.CTkLabel(card_saida, text="Uma nota por sílaba ou uma nota por palavra inteira.",
+                     font=("Segoe UI", 11), text_color=TEXT_MUTED).grid(row=4, sticky="w", padx=10)
 
         # Botões de Ação
         acoes = ctk.CTkFrame(painel, fg_color="transparent")
         acoes.grid(row=5, sticky="ew", pady=(0, 15))
+
+        self.botao_srt = ctk.CTkButton(acoes, text="Gerar SRT", command=self.iniciar_srt,
+                                      state="disabled", width=100, height=40)
+        self.botao_srt.pack(side="left", padx=(0, 8))
 
         self.gerar = ctk.CTkButton(acoes, text="▶   GERAR MIDI", command=self.iniciar,
                                    state="disabled", corner_radius=8, fg_color=COLOR_GREEN,
@@ -117,7 +130,7 @@ class Interface:
         self.gerar.pack(side="left")
 
         self.botao_cancelar = ctk.CTkButton(acoes, text="Cancelar", command=self.pedir_cancelamento,
-                                            state="disabled", corner_radius=8, fg_color="#272932",
+                                            state="disabled", width=90, corner_radius=8, fg_color="#272932",
                                             hover_color="#3b3e50", font=("Segoe UI", 12), height=40)
         self.botao_cancelar.pack(side="left", padx=10)
 
@@ -125,7 +138,7 @@ class Interface:
                                           state="disabled", width=115, height=40)
         self.botao_revisar.pack(side="left")
 
-        self.abrir = ctk.CTkButton(acoes, text="Abrir Pasta de Saída", command=self.abrir_pasta,
+        self.abrir = ctk.CTkButton(acoes, text="Abrir saída", width=100, command=self.abrir_pasta,
                                    state="disabled", corner_radius=8, fg_color="#272932",
                                    hover_color="#3b3e50", font=("Segoe UI", 12), height=40)
         self.abrir.pack(side="right")
@@ -177,20 +190,63 @@ class Interface:
         pasta = filedialog.askdirectory(title="Selecione a pasta da música", parent=self.janela)
         if not pasta:
             return
-        try:
-            encontrados = validar_pasta(Path(pasta))
-        except Exception as erro:
-            messagebox.showerror("Verifique a pasta", str(erro), parent=self.janela)
-            return
         self.pasta = Path(pasta).resolve()
         self.caminho.set(str(self.pasta))
-        self.arquivos.set("Arquivos detectados: " + "  ·  ".join(p.name for p in encontrados.values()))
-        self.status.set("Pronto para iniciar a conversão.")
-        self.gerar.configure(state="normal")
-        self.botao_revisar.configure(state="normal")
+        self.atualizar_disponibilidade()
+        self.status.set("Selecione uma operação disponível.")
         self.resultado = None
         self.abrir.configure(state="disabled")
         self.escolher.configure(text="Alterar pasta")
+
+    def atualizar_disponibilidade(self):
+        estado = estado_pasta(self.pasta) if self.pasta else dict(srt='Selecione uma pasta.', midi='Selecione uma pasta.')
+        self.botao_srt.configure(state='normal' if not self.ocupado and estado['srt'] is None else 'disabled')
+        self.gerar.configure(state='normal' if not self.ocupado and estado['midi'] is None else 'disabled')
+        self.botao_revisar.configure(state='normal' if not self.ocupado and estado['midi'] is None else 'disabled')
+        self.arquivos.set('Gerar SRT: ' + (estado['srt'] or 'disponível') + '\nGerar MIDI: ' +
+                          (estado['midi'] or 'disponível'))
+
+    def iniciar_srt(self):
+        if self.ocupado or self.pasta is None:
+            return
+        if self.janela_revisao:
+            self.janela_revisao.salvar_sair()
+            if self.janela_revisao:
+                return
+        erro = estado_pasta(self.pasta)['srt']
+        if erro:
+            self.atualizar_disponibilidade()
+            messagebox.showerror('Gerar SRT', erro, parent=self.janela)
+            return
+        idioma = escolher_idioma(self.janela)
+        if idioma is None:
+            return
+        self.ocupado = True
+        self.resultado = None
+        self.cancelar.clear()
+        self.inicio = time.monotonic()
+        self.status.set('Gerando SRT · preparando WhisperX')
+        for widget in (self.escolher, self.entrada, self.seletor_modo, self.gerar,
+                       self.botao_srt, self.abrir, self.botao_revisar):
+            widget.configure(state='disabled')
+        self.botao_cancelar.configure(state='normal')
+        self.barra.configure(mode='indeterminate')
+        self.barra.start()
+        self.log.configure(state='normal')
+        self.log.delete('1.0', 'end')
+        self.log.configure(state='disabled')
+        self.registrar(f'Idioma da geração de SRT: {idioma}\n')
+        threading.Thread(target=self.trabalhar_srt, args=(self.pasta, idioma), daemon=False).start()
+
+    def trabalhar_srt(self, pasta, idioma='pt'):
+        try:
+            destino = gerar_srt_independente(pasta, self.cancelar,
+                                             lambda tipo, valor: self.eventos.put((tipo, valor)), idioma=idioma)
+            self.eventos.put(('srt_concluido', destino))
+        except ConversaoCancelada:
+            self.eventos.put(('cancelado', 'Geração de SRT cancelada.'))
+        except Exception as erro:
+            self.eventos.put(('erro', str(erro)))
 
     def iniciar(self):
         if self.ocupado or self.pasta is None:
@@ -214,7 +270,9 @@ class Interface:
         
         self.escolher.configure(state="disabled")
         self.entrada.configure(state="disabled")
+        self.seletor_modo.configure(state="disabled")
         self.gerar.configure(state="disabled")
+        self.botao_srt.configure(state="disabled")
         self.abrir.configure(state="disabled")
         self.botao_cancelar.configure(state="normal")
         self.botao_revisar.configure(state="disabled")
@@ -226,12 +284,15 @@ class Interface:
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
         self.registrar("Carregando modelos de áudio. Isso pode levar alguns momentos...\n")
-        threading.Thread(target=self.trabalhar, args=(self.pasta, nome), daemon=False).start()
+        modo = "palavras" if self.modo.get() == "Por palavras" else "silabico"
+        self.registrar(f"Modo de conversão: {self.modo.get()}\n")
+        threading.Thread(target=self.trabalhar, args=(self.pasta, nome, modo), daemon=False).start()
 
-    def trabalhar(self, pasta: Path, nome: str):
+    def trabalhar(self, pasta: Path, nome: str, modo="silabico"):
         try:
             destino = converter(pasta, nome, self.cancelar,
-                                lambda tipo, valor: self.eventos.put((tipo, valor)), revisar=self.aguardar_revisao)
+                                lambda tipo, valor: self.eventos.put((tipo, valor)), revisar=self.aguardar_revisao,
+                                modo=modo)
             self.eventos.put(("concluido", destino))
         except ConversaoCancelada:
             self.eventos.put(("cancelado", "Conversão cancelada pelo usuário."))
@@ -307,13 +368,13 @@ class Interface:
         self.ocupado = False
         self.barra.stop()
         self.barra.configure(mode="determinate")
-        self.barra.set(1.0 if tipo == "concluido" else 0.0)
+        self.barra.set(1.0 if tipo in {"concluido", "srt_concluido"} else 0.0)
         
         self.escolher.configure(state="normal")
         self.entrada.configure(state="normal")
-        self.gerar.configure(state="normal")
+        self.seletor_modo.configure(state="normal")
+        self.atualizar_disponibilidade()
         self.botao_cancelar.configure(state="disabled")
-        self.botao_revisar.configure(state="normal")
         
         if tipo == "concluido":
             self.resultado = valor.midi
@@ -324,21 +385,27 @@ class Interface:
             )
             self.abrir.configure(state="normal")
             self.escolher.configure(text="Converter outro áudio")
+        elif tipo == 'srt_concluido':
+            self.resultado = valor
+            self.status.set('SRT gerado. Revise a letra e os tempos antes de converter.')
+            self.registrar(f'\n[SUCESSO] {valor}\nRelatório: {valor.with_name("letra_geracao.json")}\n'
+                           'A conversão MIDI pode ser iniciada separadamente quando todos os arquivos estiverem disponíveis.\n')
+            self.abrir.configure(state='normal')
         elif tipo == "cancelado":
             self.status.set(valor)
             self.registrar("\n" + valor + "\n")
         else:
-            self.status.set("Erro na execução da conversão")
+            self.status.set("Erro na execução da operação")
             self.registrar("\n[ERRO]: " + valor + "\n")
             if not self.fechar_depois:
-                messagebox.showerror("Erro na conversão", valor, parent=self.janela)
+                messagebox.showerror("Erro na operação", valor, parent=self.janela)
 
     def pedir_cancelamento(self):
         if self.ocupado:
             self.cancelar.set()
             if self.janela_revisao:
                 self.janela_revisao.salvar_sair()
-            self.status.set("Encerrando threads de conversão...")
+            self.status.set("Cancelando a operação...")
             self.botao_cancelar.configure(state="disabled")
 
     def abrir_pasta(self):

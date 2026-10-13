@@ -190,6 +190,7 @@ def criar_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--srt", help="SRT já preparado; se omitido, consolida letra.txt + letra.srt antes do alinhamento.")
     parser.add_argument("--revisao", help="Manifesto letra_validada.json com tempos confirmados manualmente.")
+    parser.add_argument("--modo", choices=("silabico", "palavras"), default="silabico")
     return parser
 
 
@@ -470,11 +471,11 @@ def main():
 
     print()
     print("=" * 60)
-    print("ETAPA 3 — ALINHAMENTO DAS SÍLABAS")
+    print("ETAPA 3 — PALAVRAS PRONTAS" if argumentos.modo == "palavras" else "ETAPA 3 — ALINHAMENTO DAS SÍLABAS")
     print("=" * 60)
 
     with medir("separação e alinhamento das sílabas"):
-        silabas = gerar_silabas_alinhadas(
+        silabas = [] if argumentos.modo == "palavras" else gerar_silabas_alinhadas(
             palavras=palavras,
             idioma=(
                 argumentos.idioma_silabas
@@ -515,6 +516,7 @@ def main():
 
     resultado_completo = {
         "metadados": {
+            "modo": argumentos.modo,
             "arquivo_voz": str(
                 caminho_voz
             ),
@@ -556,7 +558,7 @@ def main():
     }
 
     resultado_completo["metadados"]["auditoria_cobertura"] = validar_cobertura(
-        resultado_completo, blocos_fonte=blocos,
+        resultado_completo, blocos_fonte=blocos, modo=argumentos.modo,
     )
     resultado_completo["metadados"]["sha256_srt"] = hash_srt
     resultado_completo["metadados"]["consolidacao"] = consolidacao

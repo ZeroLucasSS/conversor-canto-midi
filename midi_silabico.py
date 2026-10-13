@@ -7,8 +7,10 @@ from config_alinhamento import RESOLUCAO_MIDI_TICKS
 from notas_silabicas import NotaSilabica
 
 
-def gerar_midi_silabico(notas: list[NotaSilabica], caminho_saida: str | Path) -> Path:
+def gerar_midi_silabico(notas: list[NotaSilabica], caminho_saida: str | Path, *, modo="silabico") -> Path:
     """Um evento por sílaba, sem cortes por confiança ou alongamento mínimo."""
+    from modos_conversao import validar_modo
+    validar_modo(modo)
     ordenadas = sorted(notas, key=lambda n: (n.inicio_nota, n.ordem_global))
     if not ordenadas:
         raise ValueError("Não há notas para exportar.")
@@ -21,7 +23,7 @@ def gerar_midi_silabico(notas: list[NotaSilabica], caminho_saida: str | Path) ->
     midi = pretty_midi.PrettyMIDI(initial_tempo=tempo, resolution=RESOLUCAO_MIDI_TICKS)
     instrumento = pretty_midi.Instrument(
         program=pretty_midi.instrument_name_to_program(INSTRUMENTO_MIDI),
-        name="Melodia vocal por sílaba",
+        name="Melodia vocal por palavra" if modo == "palavras" else "Melodia vocal por sílaba",
     )
     fim_anterior = -1.0
     for nota in ordenadas:

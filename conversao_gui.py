@@ -6,6 +6,7 @@ import json
 import os
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
 from typing import Callable
+from modos_conversao import validar_modo, sufixo_srt
 
 
 class ConversaoCancelada(Exception):
@@ -28,7 +30,7 @@ class ResultadoConversao:
     dificuldade: str
 
 
-def validar_pasta(pasta: Path) -> dict[str, Path]:
+def validar_pasta(pasta: Path, *, requisitos=("voz", "instrumental", "letra", "letra_txt")) -> dict[str, Path]:
     from config_alinhamento import EXTENSOES_AUDIO_SUPORTADAS
 
     pasta = Path(pasta).expanduser().resolve()
@@ -37,7 +39,7 @@ def validar_pasta(pasta: Path) -> dict[str, Path]:
     extensoes = {str(e).lower() for e in EXTENSOES_AUDIO_SUPORTADAS}
     arquivos = [p for p in pasta.iterdir() if p.is_file()]
     resultado = {}
-    for nome in ("voz", "instrumental", "letra", "letra_txt"):
+    for nome in requisitos:
         candidatos = [p for p in arquivos if p.stem.casefold() == ("letra" if nome == "letra_txt" else nome)
                       and (p.suffix.lower() == (".txt" if nome == "letra_txt" else ".srt") if nome in {"letra", "letra_txt"}
                            else p.suffix.lower() in extensoes)]
@@ -51,6 +53,52 @@ def validar_pasta(pasta: Path) -> dict[str, Path]:
             raise ValueError(f"O arquivo {candidatos[0].name} está vazio.")
         resultado[nome] = candidatos[0]
     return resultado
+
+
+def estado_pasta(pasta):
+    """Valida cada operação separadamente, aceitando pastas ainda incompletas."""
+    from gerar_srt import verificar_destinos
+    erros = {}
+    for operacao, requisitos in [('srt', ('voz',)), ('midi', ('voz', 'instrumental', 'letra', 'letra_txt'))]:
+        try:
+            fontes = validar_pasta(pasta, requisitos=requisitos)
+            if operacao == 'srt':
+                verificar_destinos(pasta)
+            else:
+                from consolidar_letra import ler_srt
+                blocos = ler_srt(fontes['letra'])
+                if not blocos:
+                    raise ValueError('letra.srt não contém blocos de legenda.')
+                if any(b.inicio < a.fim for a, b in zip(blocos, blocos[1:])):
+                    raise ValueError('letra.srt contém blocos sobrepostos ou fora de ordem.')
+            erros[operacao] = None
+        except (ValueError, OSError) as erro:
+            erros[operacao] = str(erro)
+    return erros
+
+
+def gerar_srt_independente(pasta, cancelar, emitir, *, projeto=None, idioma='pt'):
+    from gerar_srt import verificar_destinos, publicar, validar_blocos, texto_srt
+    if idioma not in {'pt', 'en', 'bilingue'}:
+        raise ValueError('Idioma de geração de SRT inválido.')
+    pasta = Path(pasta).resolve()
+    validar_pasta(pasta, requisitos=('voz',))
+    verificar_destinos(pasta)
+    projeto = Path(projeto or Path(__file__).resolve().parent)
+    with tempfile.TemporaryDirectory(prefix='srt_whisperx_') as temp:
+        trabalho = Path(temp)
+        emitir('etapa', 'Gerando SRT com WhisperX · transcrição e alinhamento')
+        _executar(projeto / 'gerar_srt.py', [str(pasta), '--saida', str(trabalho), '--idioma', idioma],
+                  projeto, trabalho / 'geracao.log', cancelar, emitir)
+        relatorio = json.loads((trabalho / 'letra_geracao.json').read_text(encoding='utf-8'))
+        validar_blocos(relatorio['blocos'], relatorio['duracao_audio'])
+        conteudo = (trabalho / 'letra.srt').read_text(encoding='utf-8')
+        if conteudo != texto_srt(relatorio['blocos']):
+            raise ValueError('SRT gerado diverge dos tempos e textos do relatório.')
+        if cancelar.is_set():
+            raise ConversaoCancelada()
+        caminho = publicar(conteudo, relatorio, pasta)
+    return caminho
 
 
 def normalizar_nome(nome: str) -> str:
@@ -218,12 +266,12 @@ AMBIENTE_ANALISE_PARALELA = {
 
 
 def _salvar_conjunto(origens: tuple[Path, Path, Path], pasta: Path, nome: str,
-                     cancelar: Event) -> ResultadoConversao:
-    """Reserva nomes exclusivos e desfaz a própria cópia se falhar/cancelar.
+                     cancelar: Event, *, modo="silabico") -> ResultadoConversao:
+    """Publica com nome estável e histórico; desfaz falhas durante a publicação.
 
-    Não é uma transação atômica contra queda de energia. Nenhum arquivo
-    preexistente é removido, inclusive quando só um dos complementos existe.
+    O conjunto de arquivos não é atômico contra queda de energia.
     """
+    sufixo = sufixo_srt(modo)
     base = Path(normalizar_nome(nome))
     for origem in origens:
         if not origem.is_file() or origem.stat().st_size == 0:
@@ -236,53 +284,71 @@ def _salvar_conjunto(origens: tuple[Path, Path, Path], pasta: Path, nome: str,
     if (set(dados) != {"title", "artist", "difficulty", "language", "offset", "lyricsOffset"}
             or dificuldade not in {"beginner", "intermediate", "advanced"}):
         raise RuntimeError("Metadados da música inválidos.")
-    for numero in range(10000):
-        if cancelar.is_set():
-            raise ConversaoCancelada()
-        stem = base.stem if numero == 0 else f"{base.stem}_{numero}"
-        destinos = (pasta / f"{stem}{base.suffix}", pasta / f"{stem}_silabas.srt",
-                    pasta / f"{stem}_metadata.json")
-        criados = []
-        conflito = False
-        try:
-            with ExitStack() as pilha:
-                arquivos = []
-                for destino in destinos:
-                    try:
-                        arquivo = destino.open("xb")
-                    except FileExistsError:
-                        conflito = True
-                        break
-                    criados.append(destino)
-                    arquivos.append(pilha.enter_context(arquivo))
-                if not conflito:
-                    for origem, saida in zip(origens, arquivos):
-                        with origem.open("rb") as entrada:
-                            while trecho := entrada.read(1024 * 1024):
-                                if cancelar.is_set():
-                                    raise ConversaoCancelada()
-                                saida.write(trecho)
-                        saida.flush()
-                    if cancelar.is_set():
-                        raise ConversaoCancelada()
-            if not conflito:
-                return ResultadoConversao(*destinos, dificuldade)
-        except BaseException:
-            for destino in criados:
-                destino.unlink(missing_ok=True)
-            raise
-        for destino in criados:
-            destino.unlink(missing_ok=True)
-    raise RuntimeError("Há muitos arquivos com esse nome. Escolha outro nome.")
+    destinos = (pasta / base.name, pasta / f"{base.stem}_{sufixo}.srt",
+                pasta / f"{base.stem}_metadata.json")
+    # Relatórios acústicos acompanham o resultado quando disponíveis.
+    pares = list(zip(origens, destinos))
+    for extensao in ("json", "csv"):
+        origem = origens[0].with_name(f"{origens[0].stem}_notas.{extensao}")
+        if origem.is_file():
+            pares.append((origem, pasta / f"{base.stem}_notas.{extensao}"))
+    anteriores = list(dict.fromkeys([d for _, d in pares] + [
+        pasta / f"{base.stem}_silabas.srt", pasta / f"{base.stem}_palavras.srt",
+        pasta / f"{base.stem}_notas.json", pasta / f"{base.stem}_notas.csv"]))
+    trava = pasta / f".{base.stem}.conversao.lock"
+    try:
+        arquivo_trava = trava.open("x")
+    except FileExistsError:
+        raise RuntimeError("Já existe uma publicação em andamento para este MIDI.") from None
+    try:
+        with arquivo_trava, tempfile.TemporaryDirectory(prefix=".publicacao_", dir=pasta) as temp:
+            trabalho = Path(temp)
+            for origem, destino in pares:
+                if cancelar.is_set():
+                    raise ConversaoCancelada()
+                shutil.copy2(origem, trabalho / destino.name)
+            existentes = [p for p in anteriores if p.exists()]
+            if any(not p.is_file() for p in existentes):
+                raise RuntimeError("Um destino de saída é uma pasta, não um arquivo.")
+            historico = None
+            if existentes:
+                raiz = pasta / "historico_conversoes"
+                raiz.mkdir(exist_ok=True)
+                historico = Path(tempfile.mkdtemp(prefix=f"{base.stem}_", dir=raiz))
+                for anterior in existentes:
+                    shutil.copy2(anterior, historico / anterior.name)
+            if cancelar.is_set():
+                raise ConversaoCancelada()
+            publicados, removidos = [], []
+            try:
+                for _, destino in pares:
+                    os.replace(trabalho / destino.name, destino)
+                    publicados.append(destino)
+                for anterior in existentes:
+                    if anterior not in publicados:
+                        anterior.unlink()
+                        removidos.append(anterior)
+            except BaseException:
+                for destino in publicados + removidos:
+                    if destino in existentes:
+                        shutil.copy2(historico / destino.name, destino)
+                    else:
+                        destino.unlink(missing_ok=True)
+                raise
+    finally:
+        trava.unlink(missing_ok=True)
+    return ResultadoConversao(*destinos, dificuldade)
 
 
 def converter(pasta: Path, nome: str, cancelar: Event,
               emitir: Callable[[str, str], None], *, projeto: Path | None = None,
-              revisar=None) -> ResultadoConversao:
-    """Consolida a letra, alinha sílabas e gera o conjunto MIDI.
+              revisar=None, modo="silabico") -> ResultadoConversao:
+    """Consolida a letra, alinha unidades vocais e gera o conjunto MIDI.
 
     emitir recebe ('etapa', texto) ou ('log', texto). Não acessa widgets.
     """
+    validar_modo(modo)
+    unidade = sufixo_srt(modo)
     projeto = (projeto or Path(__file__).resolve().parent).resolve()
     pasta = Path(pasta).expanduser().resolve()
     fontes = validar_pasta(pasta)
@@ -325,6 +391,7 @@ def converter(pasta: Path, nome: str, cancelar: Event,
             fonte_srt, manifesto = sessao.publicar()
         tarefas = [_Tarefa(projeto / "preparar_letra.py",
                            [str(pasta), "--srt", str(fonte_srt), "--saida", str(alinhamento),
+                            "--modo", modo,
                             *(['--revisao', str(manifesto)] if manifesto else [])],
                            trabalho / "alinhamento.log")]
         # A análise de pitch/harmonia não depende da letra: roda junto com o
@@ -341,7 +408,7 @@ def converter(pasta: Path, nome: str, cancelar: Event,
                                    ambiente=AMBIENTE_ANALISE_PARALELA))
             emitir("etapa", "2 de 3 · Alinhando a letra e analisando voz e harmonia")
         else:
-            emitir("etapa", "2 de 3 · Preparando a letra e alinhando as sílabas")
+            emitir("etapa", f"2 de 3 · Preparando a letra e alinhando {unidade}")
             if memoria is not None:
                 emitir("log", f"Memória livre ({memoria / 1024 ** 3:.1f} GB) insuficiente "
                               "para processar em paralelo; etapas em sequência.\n")
@@ -353,11 +420,12 @@ def converter(pasta: Path, nome: str, cancelar: Event,
                else "3 de 3 · Analisando voz, harmonia e gerando o MIDI")
         _executar(projeto / "gerar_midi_silabico.py",
                   ["resultado.mid", "--pasta-musica", str(pasta),
+                   "--modo", modo,
                    "--alinhamento", str(json_alinhamento), "--saida", str(notas),
                    *(["--analise-audio", str(analise)] if paralelo else [])],
                   projeto, trabalho / "midi.log", cancelar, emitir)
-        emitir("etapa", "Salvando MIDI, SRT silábico e metadados")
-        destino = _salvar_conjunto((notas / "resultado.mid", notas / "resultado_silabas.srt",
-                                   notas / "resultado_metadata.json"), pasta, nome, cancelar)
+        emitir("etapa", f"Salvando MIDI, SRT ({unidade}) e metadados")
+        destino = _salvar_conjunto((notas / "resultado.mid", notas / f"resultado_{unidade}.srt",
+                                   notas / "resultado_metadata.json"), pasta, nome, cancelar, modo=modo)
         emitir("log", f"\nDificuldade estimada: {destino.dificuldade}\n")
     return destino
