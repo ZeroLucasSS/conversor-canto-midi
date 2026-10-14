@@ -15,10 +15,18 @@ def planejar_lacunas(blocos, consultas, ref, duracao, janela_maxima):
     da letra. Blocos sem correspondência não são atravessados silenciosamente.
     """
     lacunas = []
-    pares = [(None, 0)] + [(i, i + 1) for i in range(len(blocos) - 1)] + [(len(blocos)-1, None)]
+    # Fragmentos curtos sem localização textual não são âncoras. Permanecem
+    # como intervalos ocupados, auditados e protegidos contra novas inserções.
+    ignorados = {i for i, (b, q) in enumerate(zip(blocos, consultas))
+                 if q['txt_inicio'] is None and len(c.tokenizar(b.texto)) <= 2
+                 and b.fim - b.inicio <= 1.}
+    limites = [None] + [i for i in range(len(blocos)) if i not in ignorados] + [None]
+    pares = list(zip(limites, limites[1:]))
     for esquerda, direita in pares:
         q = consultas[esquerda] if esquerda is not None else None
         r = consultas[direita] if direita is not None else None
+        if q is None and r is None:
+            continue
         if (q and q['txt_fim'] is None) or (r and r['txt_inicio'] is None):
             continue
         a = q['txt_fim'] if q else 0
@@ -30,7 +38,7 @@ def planejar_lacunas(blocos, consultas, ref, duracao, janela_maxima):
         motivo = None
         if fim - inicio <= .01:
             motivo = 'sem_espaco_temporal_entre_blocos'
-        elif fim - inicio > min(janela_maxima, max(30., 2. * (b-a))):
+        elif fim - inicio > min(janela_maxima, max(30., 3. * (b-a))):
             motivo = 'lacuna_excede_limite_de_busca'
         elif any(x is not None and x['score'] < .75 for x in (q, r)):
             motivo = 'referencias_textuais_insuficientes'
@@ -38,7 +46,11 @@ def planejar_lacunas(blocos, consultas, ref, duracao, janela_maxima):
                             inicio=inicio, fim=fim,
                             bloco_anterior=blocos[esquerda].indice if q else None,
                             bloco_seguinte=blocos[direita].indice if r else None,
-                            limite_busca=min(janela_maxima, max(30., 2. * (b-a))),
+                            ocupados=[dict(indice=blocos[i].indice, inicio=blocos[i].inicio,
+                                           fim=blocos[i].fim, texto=blocos[i].texto)
+                                      for i in sorted(ignorados)
+                                      if inicio <= blocos[i].inicio and blocos[i].fim <= fim],
+                            limite_busca=min(janela_maxima, max(30., 3. * (b-a))),
                             motivo_nao_pesquisado=motivo))
     return lacunas
 
@@ -71,22 +83,39 @@ def recuperar_lacuna(g, texto, ref, alinhador, score_minimo):
     esperadas = [t.texto for t in ref[a:b]]
     registro['texto'] = c.trecho_txt(texto, ref, a, b)
     registro['estado'] = 'pesquisado_sem_confirmacao'
-    tentativa = dict(janela=[g['inicio'], g['fim']], texto=' '.join(esperadas))
+    # Preserva linhas para a seleção de idioma; nenhuma linha recebe um
+    # intervalo artificial calculado pelo seu comprimento.
+    texto_busca = texto[ref[a].inicio:ref[b-1].fim]
+    tentativa = dict(janela=[g['inicio'], g['fim']], texto=texto_busca)
     registro['tentativas'].append(tentativa)
     try:
-        ps = alinhador.alinhar(' '.join(esperadas), g['inicio'], g['fim'])
+        ps = alinhador.alinhar(texto_busca, g['inicio'], g['fim'])
         tentativa['palavras'] = [c._palavra_json(p) for p in ps]
         escolhidas = c.aproveitar_palavras(ps, esperadas, g['inicio'], g['fim'])
     except Exception as erro:
         tentativa['erro'] = f'{type(erro).__name__}: {erro}'
         return registro
+    ocupados = g.get('ocupados', [])
+    for i, p in enumerate(escolhidas):
+        if p is None:
+            continue
+        conflitos = [o for o in ocupados if p.inicio < o['fim'] and p.fim > o['inicio']]
+        if conflitos:
+            tentativa.setdefault('conflitos_originais', []).append(dict(
+                token_txt=a+i, blocos=[o['indice'] for o in conflitos]))
+            # Um fragmento original permanece visível, mas não certifica a
+            # ocorrência do TXT apenas porque há sobreposição temporal.
+            escolhidas[i] = None
     k = 0
     while k < len(esperadas):
         if escolhidas[k] is None:
             k += 1
             continue
         j = k + 1
-        while j < len(esperadas) and escolhidas[j] is not None and ref[a+j].unidade == ref[a+k].unidade:
+        while (j < len(esperadas) and escolhidas[j] is not None
+               and ref[a+j].unidade == ref[a+k].unidade
+               and not any(escolhidas[k].inicio < o['fim'] and escolhidas[j].fim > o['inicio']
+                           for o in ocupados)):
             j += 1
         palavras = escolhidas[k:j]
         inicio, fim = palavras[0].inicio, palavras[-1].fim
@@ -113,7 +142,7 @@ def recuperar_lacuna(g, texto, ref, alinhador, score_minimo):
 
 
 def consolidar_etapas(blocos, texto, alinhador, *, score_minimo=.30, margem=.40,
-                      janela_maxima=90., progresso=None):
+                      janela_maxima=180., progresso=None):
     if not blocos or not c.tokenizar(texto):
         raise ValueError('SRT e TXT precisam conter palavras.')
     if not c._numero(janela_maxima) or janela_maxima <= 0 or not c._numero(margem) or margem < 0:
@@ -125,6 +154,9 @@ def consolidar_etapas(blocos, texto, alinhador, *, score_minimo=.30, margem=.40,
         raise ValueError('SRT contém tempos fora do áudio.')
     if any(b.inicio < a.fim for a,b in zip(blocos,blocos[1:])):
         raise ValueError('Blocos fora de ordem ou sobrepostos.')
+    preparar = getattr(alinhador, 'preparar_texto', None)
+    if callable(preparar):
+        preparar(texto)
     plano = c.planejar_estrutura(blocos, texto)
     ref = c.tokenizar(texto)
     saida, auditoria, pendencias, avisos, usados = [], [], [], [], set()
@@ -161,6 +193,11 @@ def consolidar_etapas(blocos, texto, alinhador, *, score_minimo=.30, margem=.40,
         recuperacoes.append(r)
         saida.extend(r['inseridos'])
         usados.update(r['tokens_recuperados'])
+        for tentativa in r['tentativas']:
+            for conflito in tentativa.get('conflitos_originais', []):
+                pendencias.append(dict(lacuna=g['id'], motivo='conflito_com_bloco_original', **conflito))
+                avisos.append(f"TXT '{ref[conflito['token_txt']].texto}': tempo acústico conflita "
+                              f"com bloco(s) original(is) {conflito['blocos']}; revisar associação.")
         if r['estado'] != 'recuperado':
             pendencias.append(dict(lacuna=g['id'], motivo=r['estado'], detalhe=g['motivo_nao_pesquisado']))
             avisos.append(f"Lacuna {g['id']}: {r['estado'].replace('_', ' ')} "
@@ -181,10 +218,12 @@ def consolidar_etapas(blocos, texto, alinhador, *, score_minimo=.30, margem=.40,
     saida.sort(key=lambda b:b['inicio'])
     if any(round(b['inicio']*1000) < round(a['fim']*1000) for a,b in zip(saida,saida[1:])):
         raise ValueError('Inserções sobrepõem blocos existentes.')
-    return dict(versao=5, status='pendente' if pendencias else 'consolidado',
+    return dict(versao=6, status='pendente' if pendencias else 'consolidado',
         estrategia='preservar_corrigir_inserir', motor=alinhador.nome, duracao_audio=duracao,
         scores_sao_probabilidades=False, aprovacao_musical_automatica=False,
         parametros=dict(score_minimo=score_minimo, janela_maxima=janela_maxima,
+                        segundos_busca_por_palavra=3., janela_minima=30.,
+                        fragmento_sem_ancora_max_palavras=2, fragmento_sem_ancora_max_segundos=1.,
                         score_suporte_insercao=.10, atividade_minima_insercao=.20,
                         margem=margem, margem_aplicada=False),
         total_palavras_txt=len(ref), total_palavras_srt=sum(len(c.tokenizar(b.texto)) for b in blocos),
@@ -195,6 +234,8 @@ def consolidar_etapas(blocos, texto, alinhador, *, score_minimo=.30, margem=.40,
             palavras_txt_sem_tempo=len(sem_tempo),
             palavras_txt_nao_pesquisadas=len(set(sem_tempo)-pesquisados),
             palavras_txt_pesquisadas_sem_tempo=len(set(sem_tempo)&pesquisados),
+            palavras_conflito_original=len({x['token_txt'] for r in recuperacoes
+                for t in r['tentativas'] for x in t.get('conflitos_originais', [])}),
             palavras_baixa_confianca=sum(b['palavras_baixa_confianca'] for r in recuperacoes for b in r['inseridos']),
             tentativas_acusticas=sum(len(r['tentativas']) for r in recuperacoes)),
         comparacao=plano, auditoria_estrutura=auditoria, recuperacoes=recuperacoes,

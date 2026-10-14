@@ -17,6 +17,20 @@ SRT = "1\n00:00:01,000 --> 00:00:02,000\nBom dia\n"
 
 
 class IntegracaoTest(unittest.TestCase):
+    def test_preparacao_nao_forca_portugues_na_consolidacao(self):
+        import preparar_letra
+        with tempfile.TemporaryDirectory() as temp:
+            pasta = Path(temp)
+            self.preparar(pasta)
+            for extras, esperado in [([], 'auto'), (['--idioma-consolidacao', 'bilingue'], 'bilingue')]:
+                with self.subTest(esperado=esperado), \
+                     patch.object(sys, 'argv', ['preparar_letra.py', str(pasta), *extras]), \
+                     patch.object(c, 'main', return_value=1) as consolidar:
+                    with self.assertRaisesRegex(RuntimeError, 'Falha na consolidação'):
+                        preparar_letra.main()
+                    args = consolidar.call_args.args[0]
+                    self.assertEqual(args[args.index('--idioma') + 1], esperado)
+
     def test_auditoria_segue_fonte_consolidada_e_rejeita_alteracao(self):
         from gerar_midi_silabico import fonte_srt_alinhamento
         with tempfile.TemporaryDirectory() as temp:

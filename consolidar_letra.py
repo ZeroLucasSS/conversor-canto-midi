@@ -89,7 +89,7 @@ class AlinhadorLocal(Protocol):
 class AlinhadorWhisperX:
     nome = "whisperx"
 
-    def __init__(self, voz: Path, idioma="pt", dispositivo="auto",
+    def __init__(self, voz: Path, idioma="auto", dispositivo="auto",
                  modelo=None, pasta_modelos=None):
         import torch
         import whisperx
@@ -100,19 +100,32 @@ class AlinhadorWhisperX:
             raise ValueError("CUDA solicitada, mas indisponível.")
         self.audio = whisperx.load_audio(str(voz))
         self.duracao_audio = len(self.audio) / 16000
-        kwargs = dict(language_code=idioma, device=self.dispositivo, model_name=modelo)
+        if idioma in {'auto', 'bilingue'} and modelo:
+            raise ValueError('Modelo personalizado exige um código de idioma explícito.')
+        self.idioma = idioma
+        self.modelos = {}
+        self.historico_idiomas = []
+        self.kwargs_modelo = dict(device=self.dispositivo, model_name=modelo)
         if pasta_modelos:
-            kwargs["model_dir"] = str(pasta_modelos)
+            self.kwargs_modelo['model_dir'] = str(pasta_modelos)
+
+    def _modelo(self, idioma):
+        if idioma in self.modelos:
+            return self.modelos[idioma]
+        kwargs = dict(self.kwargs_modelo, language_code=idioma)
         # Mesmo cache do projeto; tenta primeiro sem acesso à rede.
         try:
-            self.modelo, self.meta = whisperx.load_align_model(**kwargs, model_cache_only=True)
+            resultado = self.wx.load_align_model(**kwargs, model_cache_only=True)
         except (TypeError, OSError, ValueError):
-            self.modelo, self.meta = whisperx.load_align_model(**kwargs)
+            resultado = self.wx.load_align_model(**kwargs)
+        self.modelos[idioma] = resultado
+        return resultado
 
-    def alinhar(self, texto, inicio, fim):
+    def _alinhar_idioma(self, texto, inicio, fim, idioma):
+        modelo, meta = self._modelo(idioma)
         resultado = self.wx.align(
-            [{"text": texto, "start": inicio, "end": fim}], self.modelo,
-            self.meta, self.audio, self.dispositivo, interpolate_method="ignore",
+            [{"text": texto, "start": inicio, "end": fim}], modelo,
+            meta, self.audio, self.dispositivo, interpolate_method="ignore",
             return_char_alignments=True, print_progress=False,
         )
         palavras = resultado.get("word_segments")
@@ -120,6 +133,55 @@ class AlinhadorWhisperX:
             palavras = [p for s in resultado.get("segments", []) for p in s.get("words", [])]
         return [PalavraTemporal(p.get("word", ""), p.get("start"),
                                 p.get("end"), p.get("score")) for p in palavras]
+
+    def preparar_texto(self, texto):
+        from idiomas_letra import idioma_predominante
+        self.contexto_idioma = idioma_predominante(texto)
+
+    def alinhar(self, texto, inicio, fim):
+        from idiomas_letra import idiomas_por_linha
+        ref = tokenizar(texto)
+        linhas = idiomas_por_linha(texto, getattr(self, 'contexto_idioma', None)) if self.idioma in {'auto', 'bilingue'} else [
+            dict(idioma=self.idioma, herdado=False) for _ in texto.splitlines()]
+        idiomas = [linhas[t.unidade]['idioma'] for t in ref]
+        self.historico_idiomas.append(dict(inicio=inicio, fim=fim, linhas=linhas))
+        resultados = {}
+        esperadas = [t.texto for t in ref]
+        # Ambos os modelos veem o contexto inteiro; nunca dividimos o tempo
+        # proporcionalmente ao texto. Cada palavra usa o modelo de sua linha.
+        for idioma in dict.fromkeys(idiomas):
+            ps = self._alinhar_idioma(' '.join(esperadas), inicio, fim, idioma)
+            resultados[idioma] = aproveitar_palavras(ps, esperadas, inicio, fim)
+        opcoes = [[resultados[idioma][i]] if resultados[idioma][i] else []
+                  for i, idioma in enumerate(idiomas)]
+        escolhidas = escolher_tempos(opcoes, inicio, fim)
+        if len(resultados) > 1:
+            # Um modelo monolíngue pode comprimir a própria frase ao tentar
+            # atravessar palavras estrangeiras. Refina cada grupo usando as
+            # palavras vizinhas já alinhadas como limites acústicos reais.
+            a = 0
+            while a < len(ref):
+                b = a + 1
+                while b < len(ref) and idiomas[b] == idiomas[a]:
+                    b += 1
+                esquerda = next((p.fim for p in reversed(escolhidas[:a])
+                                 if p and _numero(p.score) and p.score >= .30), inicio)
+                direita = next((p.inicio for p in escolhidas[b:]
+                                if p and _numero(p.score) and p.score >= .30), fim)
+                if esquerda < direita:
+                    try:
+                        ps = self._alinhar_idioma(' '.join(esperadas[a:b]), esquerda, direita, idiomas[a])
+                        locais = aproveitar_palavras(ps, esperadas[a:b], esquerda, direita)
+                        for i, p in enumerate(locais, a):
+                            if p:
+                                opcoes[i].append(p)
+                    except Exception as erro:
+                        self.historico_idiomas[-1].setdefault('falhas_refinamento', []).append(
+                            dict(idioma=idiomas[a], erro=f'{type(erro).__name__}: {erro}'))
+                a = b
+            escolhidas = escolher_tempos(opcoes, inicio, fim)
+        return [p or PalavraTemporal(t.texto, None, None, None)
+                for t, p in zip(ref, escolhidas)]
 
 
 def _segundos(texto):
@@ -673,6 +735,14 @@ def planejar_estrutura(blocos, texto):
         if candidatos:
             melhor = max(x[0] for x in candidatos)
             proximos = [x for x in candidatos if x[0] >= melhor - .025]
+            # Uma palavra isolada aproximada não localiza uma frase; uma
+            # palavra exata repetida só ancora quando continua o bloco vizinho.
+            if n == 1:
+                proximos = [x for x in proximos if normalizados[x[1]:x[2]] == palavras]
+                if len(proximos) > 1:
+                    proximos = [x for x in proximos if x[1] == cursor and consultas
+                                and consultas[-1]['txt_fim'] == cursor
+                                and bloco.inicio - consultas[-1]['fim'] <= 3.]
             versoes = {tuple(normalizados[a:b]) for _, a, b in proximos}
             # Um vizinho reconhecido pode distinguir variantes textuais de
             # refrões semelhantes, sem saltar para outra parte da letra.
@@ -706,11 +776,12 @@ def planejar_estrutura(blocos, texto):
     return dict(consultas=consultas, regioes=regioes,
                 tokens_txt_sem_correspondencia=sorted(set(range(len(ref))) - usados),
                 parametros=dict(score_consulta_minimo=.65, margem_ambiguidade=.025,
-                                bonus_por_extremidade=.02, score_contexto_minimo=.85))
+                                bonus_por_extremidade=.02, score_contexto_minimo=.85,
+                                distancia_max_palavra_isolada=3., palavra_isolada_exige_exatidao=True))
 
 
 def consolidar(blocos, texto, alinhador, *, score_minimo=.30, margem=.40,
-               janela_maxima=90., progresso=None):
+               janela_maxima=180., progresso=None):
     from etapas_consolidacao import consolidar_etapas
     return consolidar_etapas(blocos, texto, alinhador, score_minimo=score_minimo,
                              margem=margem, janela_maxima=janela_maxima, progresso=progresso)
@@ -787,13 +858,14 @@ def main(argv=None):
     parser.add_argument("--saida", type=Path, help="Padrão: PASTA/letra_consolidada.srt; não sobrescreve")
     parser.add_argument("--atualizar", action="store_true", help="Regenera letra_consolidada.srt e seu JSON; preserva as fontes.")
     parser.add_argument("--somente-comparar", action="store_true", help="Gera apenas diagnóstico textual, sem carregar WhisperX")
-    parser.add_argument("--idioma", default="pt")
+    parser.add_argument("--idioma", default="auto",
+                        help='Auto/bilingue: seleciona pt/en por linha do TXT; pt/en força um modelo.')
     parser.add_argument("--dispositivo", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--modelo-alinhamento")
     parser.add_argument("--pasta-modelos", type=Path, default=Path(__file__).resolve().parent / "modelos" / "alinhamento")
     parser.add_argument("--score-minimo", type=float, default=0.30)
     parser.add_argument("--margem", type=float, default=0.40)
-    parser.add_argument("--janela-maxima", type=float, default=90.0)
+    parser.add_argument("--janela-maxima", type=float, default=180.0)
     args = parser.parse_args(argv)
     try:
         txt = (args.txt or args.pasta / "letra.txt").resolve()
@@ -812,7 +884,7 @@ def main(argv=None):
         ref = tokenizar(texto)
         fontes = {"txt": _identidade(txt), "srt": _identidade(srt)}
         if args.somente_comparar:
-            relatorio = {"versao": 5, "status": "somente_comparacao", "comparacao": planejar_estrutura(blocos, texto),
+            relatorio = {"versao": 6, "status": "somente_comparacao", "comparacao": planejar_estrutura(blocos, texto),
                          "total_palavras_txt": len(ref), "total_palavras_srt": len(fonte),
                          "blocos": [], "pendencias": [{"motivo": "analise_acustica_nao_executada"}]}
         else:
@@ -833,7 +905,8 @@ def main(argv=None):
                                    margem=args.margem, janela_maxima=args.janela_maxima,
                                    progresso=lambda mensagem: print(mensagem, flush=True))
             relatorio["configuracao_motor"] = {"idioma": args.idioma, "dispositivo": alinhador.dispositivo,
-                                              "modelo_solicitado": args.modelo_alinhamento}
+                                              "modelo_solicitado": args.modelo_alinhamento,
+                                              "selecao_por_trecho": getattr(alinhador, 'historico_idiomas', [])}
         relatorio["fontes"] = fontes
         diagnostico = publicar(relatorio, saida, atualizar=args.atualizar)
         print(f"Status: {relatorio['status']}\nRelatório: {diagnostico}")

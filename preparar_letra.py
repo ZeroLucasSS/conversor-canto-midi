@@ -166,6 +166,10 @@ def criar_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    parser.add_argument('--idioma-consolidacao', default='auto',
+                        help='Idioma da consolidação: auto, bilingue ou código explícito (pt/en). '
+                             'Independente do idioma do alinhamento posterior de sílabas.')
+
     parser.add_argument(
         "--dispositivo",
         default=DISPOSITIVO_ALINHAMENTO,
@@ -231,7 +235,9 @@ def main():
         from consolidar_letra import main as consolidar_main
         opcoes = [str(pasta_musica), "--voz", str(caminho_voz),
                   "--srt", str(localizar_srt(pasta_musica)), "--atualizar",
-                  "--idioma", argumentos.idioma_alinhamento,
+                  "--idioma", (argumentos.idioma_alinhamento if argumentos.modelo_alinhamento
+                               and argumentos.idioma_consolidacao == 'auto'
+                               else argumentos.idioma_consolidacao),
                   "--dispositivo", argumentos.dispositivo]
         if argumentos.modelo_alinhamento:
             opcoes += ["--modelo-alinhamento", argumentos.modelo_alinhamento]

@@ -266,6 +266,9 @@ class ConsolidacaoTest(unittest.TestCase):
         motor = c.AlinhadorWhisperX.__new__(c.AlinhadorWhisperX)
         motor.wx = Mock()
         motor.modelo, motor.meta, motor.audio, motor.dispositivo = object(), {}, object(), "cpu"
+        motor.idioma = 'pt'
+        motor.historico_idiomas = []
+        motor.modelos = {'pt': (motor.modelo, motor.meta)}
         motor.wx.align.return_value = {"word_segments": [
             {"word": "Bom", "start": 10.2, "end": 10.8, "score": .9},
             {"word": "dia"}]}
