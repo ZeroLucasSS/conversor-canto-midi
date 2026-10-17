@@ -161,6 +161,21 @@ class GerarSRTTest(unittest.TestCase):
         self.assertEqual((self.pasta / 'letra.srt').read_text(), 'criado por outro processo')
         self.assertFalse((self.pasta / 'letra_geracao.json').exists())
 
+    def test_relatorio_bilingue_publica_alternativas_e_mantem_configuracao_do_chamador(self):
+        janelas=[dict(inicio=0.,fim=3.,usada=True,
+                      hipoteses=[dict(idioma='pt',texto='Bom dia amor'),
+                                 dict(idioma='en',texto='Good morning love')],
+                      decisao=dict(revisao_recomendada=True))]
+        config=dict(modelo='teste',reconhecimento_bilingue=janelas)
+        with patch.object(srt,'reconhecer',return_value=([segmento()],3.,config)):
+            srt.gerar(self.pasta,idioma='bilingue')
+        dados=json.loads((self.pasta/'letra_geracao.json').read_text(encoding='utf-8'))
+        self.assertEqual(dados['versao'],3)
+        self.assertEqual(dados['reconhecimento_bilingue'],janelas)
+        self.assertIn('reconhecimento_bilingue',config)
+        self.assertNotIn('reconhecimento_bilingue',dados['configuracao'])
+        self.assertTrue(any('comparação PT/EN' in a for a in dados['avisos']))
+
     def test_cancelamento_antes_da_publicacao(self):
         cancelar = Event()
         def executar(script, args, projeto, log, evento, emitir):
@@ -218,21 +233,20 @@ class GerarSRTTest(unittest.TestCase):
         wx = MagicMock()
         wx.load_audio.return_value = [0.] * 96000
         backend = wx.load_model.return_value.model
-        backend.transcribe.return_value = (iter([
-            SimpleNamespace(start=0., end=3., text='Bom dia'),
-            SimpleNamespace(start=3., end=6., text='Good morning')]), None)
-        backend.detect_language.side_effect = [('pt', .9, [('pt', .9), ('en', .1)]),
-                                                ('en', .9, [('en', .9), ('pt', .1)])]
+        reconhecidos = [dict(start=0.,end=3.,text='Bom dia',idioma='pt'),
+                        dict(start=3.,end=6.,text='Good morning',idioma='en')]
         wx.load_align_model.side_effect = lambda **kw: (kw['language_code'], {})
         wx.align.return_value = {'segments': []}
-        with patch.dict('sys.modules', {'whisperx': wx, 'torch': MagicMock(),
+        with patch('transcricao_bilingue.transcrever_bilingue', return_value=(reconhecidos, [])) as duplo, \
+             patch.dict('sys.modules', {'whisperx': wx, 'torch': MagicMock(),
                                         'alinhamento': SimpleNamespace(resolver_dispositivo=lambda x: 'cpu')}):
             segmentos, _, config = srt.reconhecer(self.pasta / 'voz.wav', idioma='bilingue', pasta_modelos=self.pasta)
         self.assertEqual([s['idioma'] for s in segmentos], ['pt', 'en'])
         self.assertEqual([s['text'] for s in segmentos], ['Bom dia', 'Good morning'])
         self.assertEqual([c.kwargs['language_code'] for c in wx.load_align_model.call_args_list], ['pt', 'en'])
-        self.assertTrue(backend.transcribe.call_args.kwargs['multilingual'])
-        self.assertEqual(backend.transcribe.call_args.kwargs['task'], 'transcribe')
+        duplo.assert_called_once_with(backend, wx.load_audio.return_value)
+        self.assertEqual(config['identificacao_idioma'], 'dupla_decodificacao_pt_en')
+        self.assertEqual(config['reconhecimento_bilingue'], [])
         self.assertEqual(config['idioma'], 'bilingue')
 
     def test_cancelar_dialogo_nao_inicia_trabalho(self):

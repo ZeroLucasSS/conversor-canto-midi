@@ -194,18 +194,10 @@ def reconhecer(voz, *, modelo='small', idioma='pt', dispositivo='auto', pasta_mo
     modelo_asr = whisperx.load_model(modelo, device, compute_type=compute, language=idioma_asr,
                                     vad_method='silero', download_root=str(pasta_modelos / 'transcricao'))
     print('2 de 3 · Reconhecendo a letra cantada', flush=True)
+    auditoria_bilingue = None
     if idioma == 'bilingue':
-        # O wrapper WhisperX instalado detecta apenas um idioma por chamada.
-        # Seu backend faster-whisper suporta detecção a cada trecho.
-        trechos, _ = modelo_asr.model.transcribe(
-            audio, language=None, task='transcribe', multilingual=True, vad_filter=True,
-            chunk_length=10, condition_on_previous_text=False)
-        from idioma_transcricao import identificar_idiomas
-        originais = []
-        for t in trechos:
-            originais.append(dict(start=t.start, end=t.end, text=t.text))
-            print(f'Trecho transcrito: {t.start:.1f}–{t.end:.1f}s', flush=True)
-        originais = identificar_idiomas(modelo_asr.model, audio, originais)
+        from transcricao_bilingue import transcrever_bilingue
+        originais, auditoria_bilingue = transcrever_bilingue(modelo_asr.model, audio)
         resultado = {'segments': originais}
     else:
         resultado = modelo_asr.transcribe(audio, batch_size=1 if device == 'cpu' else 4,
@@ -236,9 +228,12 @@ def reconhecer(voz, *, modelo='small', idioma='pt', dispositivo='auto', pasta_mo
         palavras = [p for s in alinhado.get('segments', []) for p in (s.get('words') or [])]
         segmentos.append({**original, 'idioma': lingua, 'words': palavras})
         print(f'Alinhamento: {i}/{len(resultado["segments"])} segmentos', flush=True)
-    return segmentos, duracao, dict(modelo=modelo, idioma=idioma, dispositivo=device,
-                                   compute_type=compute, vad='silero',
-                                   identificacao_idioma='audio_e_texto_auditados' if idioma == 'bilingue' else 'fixo')
+    configuracao = dict(modelo=modelo, idioma=idioma, dispositivo=device,
+                       compute_type=compute, vad='silero',
+                       identificacao_idioma='dupla_decodificacao_pt_en' if idioma == 'bilingue' else 'fixo')
+    if auditoria_bilingue is not None:
+        configuracao['reconhecimento_bilingue'] = auditoria_bilingue
+    return segmentos, duracao, configuracao
 
 
 def gerar(pasta, *, saida=None, modelo='small', idioma='pt', dispositivo='auto'):
@@ -260,9 +255,17 @@ def gerar(pasta, *, saida=None, modelo='small', idioma='pt', dispositivo='auto')
             if analise.get('revisao_recomendada'):
                 avisos.append(f"Segmento {i} ({s['start']:.3f} s): evidência de idioma "
                               f"incerta/divergente; alinhador {s['idioma']}. Consulte analise_idioma.")
-    relatorio = dict(versao=2, arquivo_voz=str(voz), sha256_voz=hashlib.sha256(voz.read_bytes()).hexdigest(),
+    configuracao = dict(configuracao)
+    janelas_bilingues = configuracao.pop('reconhecimento_bilingue', None)
+    relatorio = dict(versao=3, arquivo_voz=str(voz), sha256_voz=hashlib.sha256(voz.read_bytes()).hexdigest(),
                      duracao_audio=duracao, configuracao=configuracao, segmentos=segmentos,
                      blocos=blocos, avisos=avisos, revisao_recomendada=True)
+    if janelas_bilingues is not None:
+        relatorio['reconhecimento_bilingue'] = janelas_bilingues
+        for j in janelas_bilingues:
+            if j['usada'] and j['decisao']['revisao_recomendada']:
+                avisos.append(f"Recorte {j['inicio']:.3f}–{j['fim']:.3f} s: "
+                              'revisar comparação PT/EN em reconhecimento_bilingue.')
     relatorio['metricas'] = dict(segmentos=len(segmentos), blocos=len(blocos),
         ajustes_temporais=sum(len(b.get('ajustes_temporais',[])) for b in blocos),
         idiomas_revisar=sum(s.get('analise_idioma',{}).get('revisao_recomendada',False) for s in segmentos),
