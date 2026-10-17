@@ -70,6 +70,75 @@ class GerarSRTTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 srt.agrupar_segmentos(segmentos, 3.)
 
+    def test_limites_usam_precisao_do_srt_sem_falso_conflito_de_float(self):
+        segmentos = [dict(start=0.,end=.1+.2,text='Good morning'),
+                     dict(start=.3,end=1.,text='Bom dia')]
+        blocos, _ = srt.agrupar_segmentos(segmentos, .9999999999999999)
+        self.assertEqual(blocos[0]['fim'], blocos[1]['inicio'])
+        srt.validar_blocos(blocos, 1.)
+        self.assertIn('00:00:00,300', srt.texto_srt(blocos))
+
+    def test_sobreposicao_real_informa_blocos_e_tempos(self):
+        with self.assertRaisesRegex(ValueError, r'Bloco 2.*0.298000.*0.300000'):
+            srt.validar_blocos([dict(inicio=0.,fim=.3,texto='a'),
+                               dict(inicio=.298,fim=1.,texto='b')], 1.)
+
+    def fronteira(self, score_anterior=.2, score_seguinte=.9, inicio_seguinte=1.96):
+        return [dict(start=1.,end=2.,text='We stay',words=[
+                    dict(word='We',start=1.,end=1.5,score=.9),
+                    dict(word='stay',start=1.7,end=2.,score=score_anterior)]),
+                dict(start=inicio_seguinte,end=3.,text='Eu vou',words=[
+                    dict(word='Eu',start=inicio_seguinte,end=2.4,score=score_seguinte),
+                    dict(word='vou',start=2.5,end=3.,score=.9)])]
+
+    def test_sobreposicao_curta_preserva_fronteira_forte_e_todo_texto(self):
+        blocos, avisos = srt.agrupar_segmentos(self.fronteira(), 3.)
+        self.assertEqual([b['texto'] for b in blocos], ['We stay','Eu vou'])
+        self.assertEqual(blocos[0]['fim'], 1.96)
+        self.assertEqual(blocos[1]['inicio'], 1.96)
+        self.assertEqual(blocos[0]['ajustes_temporais'][0]['anterior'], 2.)
+        self.assertTrue(any('0.040 s' in a for a in avisos))
+
+    def test_fronteira_forte_anterior_corrige_inicio_fraco_seguinte(self):
+        blocos, _ = srt.agrupar_segmentos(self.fronteira(.9,.2), 3.)
+        self.assertEqual(blocos[0]['fim'], 2.)
+        self.assertEqual(blocos[1]['inicio'], 2.)
+        self.assertEqual(blocos[1]['ajustes_temporais'][0]['campo'], 'inicio')
+
+    def test_sobreposicao_curta_no_fallback_preserva_texto(self):
+        segmentos = self.fronteira()
+        segmentos[0]['words'] = []
+        blocos, _ = srt.agrupar_segmentos(segmentos, 3.)
+        self.assertEqual(blocos[0]['texto'], 'We stay')
+        self.assertEqual(blocos[0]['fim'], 1.96)
+        self.assertEqual(blocos[0]['ajustes_temporais'][0]['motivo'],
+                         'sobreposicao_curta_com_tempo_aproximado')
+
+    def test_nao_corta_dois_alinhamentos_fortes_nem_sobreposicao_grande(self):
+        for segmentos in [self.fronteira(.9,.9), self.fronteira(.2,.2),
+                          self.fronteira(inicio_seguinte=1.8)]:
+            with self.subTest(segmentos=segmentos), self.assertRaisesRegex(ValueError,'sobrepõe'):
+                srt.agrupar_segmentos(segmentos,3.)
+
+    def test_ajuste_nao_pode_apagar_duracao_de_palavra(self):
+        segmentos = self.fronteira()
+        segmentos[0]['words'][-1]['start'] = 1.98
+        with self.assertRaisesRegex(ValueError,'sobrepõe'):
+            srt.agrupar_segmentos(segmentos,3.)
+
+    def test_tolerancia_pode_ser_desligada(self):
+        with self.assertRaises(ValueError):
+            srt.agrupar_segmentos(self.fronteira(),3.,tolerancia_sobreposicao=0.)
+
+    def test_auditoria_conserva_ajustes_nas_duas_extremidades(self):
+        segmentos = self.fronteira(.9,.2)
+        segmentos[1]['words'][-1]['score'] = .2
+        segmentos.append(dict(start=2.96,end=4.,text='Home',words=[
+            dict(word='Home',start=2.96,end=4.,score=.9)]))
+        blocos,_ = srt.agrupar_segmentos(segmentos,4.)
+        self.assertEqual([a['campo'] for a in blocos[1]['ajustes_temporais']], ['inicio','fim'])
+        self.assertEqual((blocos[1]['inicio'],blocos[1]['fim']), (2.,2.96))
+
     def test_publicacao_completa_e_comparacao_opcional(self):
         (self.pasta / 'letra.txt').write_text('Bom dia meu amor', encoding='utf-8')
         with patch.object(srt, 'reconhecer', return_value=([segmento()], 3., {'modelo': 'teste'})):
@@ -129,6 +198,7 @@ class GerarSRTTest(unittest.TestCase):
         self.assertEqual(config['compute_type'], 'int8')
         self.assertEqual(duracao, 3.)
         self.assertEqual(wx.load_model.call_args.kwargs['vad_method'], 'silero')
+        self.assertTrue(wx.load_align_model.call_args.kwargs['model_cache_only'])
 
     def test_ingles_e_passado_para_transcricao_e_alinhamento(self):
         wx = MagicMock()
@@ -146,11 +216,11 @@ class GerarSRTTest(unittest.TestCase):
 
     def test_bilingue_detecta_trechos_e_carrega_dois_alinhadores(self):
         wx = MagicMock()
-        wx.load_audio.return_value = [0.] * 64000
+        wx.load_audio.return_value = [0.] * 96000
         backend = wx.load_model.return_value.model
         backend.transcribe.return_value = (iter([
-            SimpleNamespace(start=0., end=2., text='Bom dia'),
-            SimpleNamespace(start=2., end=4., text='Good morning')]), None)
+            SimpleNamespace(start=0., end=3., text='Bom dia'),
+            SimpleNamespace(start=3., end=6., text='Good morning')]), None)
         backend.detect_language.side_effect = [('pt', .9, [('pt', .9), ('en', .1)]),
                                                 ('en', .9, [('en', .9), ('pt', .1)])]
         wx.load_align_model.side_effect = lambda **kw: (kw['language_code'], {})

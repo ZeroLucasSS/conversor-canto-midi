@@ -24,22 +24,28 @@ def validar_blocos(blocos, duracao):
     if not math.isfinite(duracao) or duracao <= 0 or not blocos:
         raise ValueError("Nenhum trecho de voz com tempo utilizável foi reconhecido.")
     anterior = 0
-    for b in blocos:
+    for indice, b in enumerate(blocos, 1):
         a, z = b['inicio'], b['fim']
         if (not all(math.isfinite(x) for x in (a, z)) or
-                not 0 <= a < z <= duracao or a < anterior or not b['texto'].strip()):
-            raise ValueError("A transcrição contém tempos inválidos ou sobrepostos; revise o áudio.")
-        if round(z * 1000) <= round(a * 1000):
-            raise ValueError("Trecho menor que a precisão do SRT.")
+                not 0 <= round(a*1000) < round(z*1000) <= round(duracao*1000)
+                or not b['texto'].strip()):
+            raise ValueError(f"Bloco {indice}: intervalo inválido {a!r}–{z!r} s "
+                             f"(áudio: {duracao:.6f} s).")
+        if round(a*1000) < round(anterior*1000):
+            raise ValueError(f"Bloco {indice}: início {a:.6f} s sobrepõe o fim "
+                             f"do bloco anterior ({anterior:.6f} s).")
         anterior = z
 
 
-def agrupar_segmentos(segmentos, duracao, *, pausa=.65, max_duracao=6., max_caracteres=72):
+def agrupar_segmentos(segmentos, duracao, *, pausa=.65, max_duracao=6., max_caracteres=72,
+                      tolerancia_sobreposicao=.100):
     """Agrupa palavras; sem alinhamento completo, conserva o segmento e seu texto.
 
     Não inventa tempos por palavra e não descarta palavras sem timestamp.
     """
-    blocos, avisos = [], []
+    if not math.isfinite(tolerancia_sobreposicao) or tolerancia_sobreposicao < 0:
+        raise ValueError('Tolerância de sobreposição inválida.')
+    blocos, avisos, origens = [], [], []
     for indice, segmento in enumerate(segmentos, 1):
         texto = ' '.join(str(segmento.get('text', '')).split())
         if not texto:
@@ -47,10 +53,13 @@ def agrupar_segmentos(segmentos, duracao, *, pausa=.65, max_duracao=6., max_cara
         palavras = segmento.get('words') or []
         grupo = []
         locais = []
+        fronteiras = []
+        aproximado = False
         def fechar():
             if grupo:
-                locais.append(dict(inicio=float(grupo[0]['start']), fim=float(grupo[-1]['end']),
+                locais.append(dict(inicio=round(float(grupo[0]['start']), 3), fim=round(float(grupo[-1]['end']), 3),
                                    texto=' '.join(str(p['word']).strip() for p in grupo)))
+                fronteiras.append(dict(primeira=grupo[0], ultima=grupo[-1]))
                 grupo.clear()
         try:
             if not palavras:
@@ -61,7 +70,9 @@ def agrupar_segmentos(segmentos, duracao, *, pausa=.65, max_duracao=6., max_cara
             fim_anterior = -1.
             for p in palavras:
                 a, z = float(p['start']), float(p['end'])
-                if not (math.isfinite(a) and math.isfinite(z) and 0 <= a < z <= duracao and a >= fim_anterior):
+                if not (math.isfinite(a) and math.isfinite(z)
+                        and 0 <= round(a*1000) < round(z*1000) <= round(duracao*1000)
+                        and round(a*1000) >= round(fim_anterior*1000)):
                     raise ValueError('tempos de palavras inválidos')
                 if grupo and (a - float(grupo[-1]['end']) >= pausa or
                               z - float(grupo[0]['start']) > max_duracao or
@@ -72,13 +83,49 @@ def agrupar_segmentos(segmentos, duracao, *, pausa=.65, max_duracao=6., max_cara
             fechar()
             validar_blocos(locais, duracao)
         except (KeyError, TypeError, ValueError):
-            locais = [dict(inicio=float(segmento['start']), fim=float(segmento['end']), texto=texto)]
+            aproximado = True
+            locais = [dict(inicio=round(float(segmento['start']), 3),
+                           fim=round(float(segmento['end']), 3), texto=texto)]
+            fronteiras = [dict(primeira=None, ultima=None)]
             avisos.append(f"Segmento {indice}: tempos do reconhecimento usados; alinhamento incompleto. Revisar.")
         for p in palavras:
             score = p.get('score')
             if isinstance(score, (float, int)) and score < .30:
                 avisos.append(f"Segmento {indice}: alinhamento fraco em {p.get('word', '')!r}.")
+        if blocos and locais:
+            anterior, atual = blocos[-1], locais[0]
+            sobreposicao = anterior['fim'] - atual['inicio']
+            if 0 < round(sobreposicao*1000) <= round(tolerancia_sobreposicao*1000):
+                alvo, campo, limite = None, None, None
+                motivo = 'sobreposicao_curta_com_tempo_aproximado'
+                # Conserva a fronteira confiável quando o vizinho usa tempo
+                # aproximado ou palavra fraca. Não inventa o ponto médio.
+                if origens[-1]['aproximado'] and anterior['inicio'] < atual['inicio']:
+                    alvo, campo, limite = anterior, 'fim', atual['inicio']
+                elif aproximado and anterior['fim'] < atual['fim']:
+                    alvo, campo, limite = atual, 'inicio', anterior['fim']
+                else:
+                    def forte(p):
+                        score = p.get('score') if p else None
+                        return isinstance(score, (int,float)) and math.isfinite(score) and score >= .30
+                    ultima, primeira = origens[-1]['ultima'], fronteiras[0]['primeira']
+                    # A fronteira forte pode corrigir a mais fraca, desde que
+                    # a palavra afetada continue tendo duração positiva.
+                    if ultima and not forte(ultima) and forte(primeira) and round(ultima['start'],3) < atual['inicio']:
+                        alvo, campo, limite = anterior, 'fim', atual['inicio']
+                    elif primeira and not forte(primeira) and forte(ultima) and anterior['fim'] < round(primeira['end'],3):
+                        alvo, campo, limite = atual, 'inicio', anterior['fim']
+                    motivo = 'sobreposicao_curta_com_fronteira_fraca'
+                if alvo is not None:
+                    alvo.setdefault('ajustes_temporais', []).append(dict(
+                        campo=campo, anterior=alvo[campo], novo=limite,
+                        motivo=motivo, segundos=round(sobreposicao,3)))
+                    alvo[campo] = limite
+                    avisos.append(f"Fronteira antes do segmento {indice}: sobreposição de "
+                                  f"{sobreposicao:.3f} s corrigida no limite menos confiável; "
+                                  f"limite {limite:.3f} s. Texto preservado; revisar.")
         blocos.extend(locais)
+        origens.extend(dict(f, aproximado=aproximado) for f in fronteiras)
     validar_blocos(blocos, duracao)
     return blocos, avisos
 
@@ -153,17 +200,12 @@ def reconhecer(voz, *, modelo='small', idioma='pt', dispositivo='auto', pasta_mo
         trechos, _ = modelo_asr.model.transcribe(
             audio, language=None, task='transcribe', multilingual=True, vad_filter=True,
             chunk_length=10, condition_on_previous_text=False)
+        from idioma_transcricao import identificar_idiomas
         originais = []
-        for trecho in trechos:
-            recorte = audio[max(0, int(trecho.start * 16000)):int(trecho.end * 16000)]
-            _, _, probabilidades = modelo_asr.model.detect_language(audio=recorte)
-            candidatas = [(lingua, prob) for lingua, prob in probabilidades if lingua in {'pt', 'en'}]
-            if not candidatas:
-                raise ValueError('Não foi possível identificar português ou inglês no trecho.')
-            lingua, probabilidade = max(candidatas, key=lambda item: item[1])
-            originais.append(dict(start=trecho.start, end=trecho.end, text=trecho.text,
-                                  idioma=lingua, confianca_idioma=float(probabilidade)))
-            print(f'Trecho bilíngue reconhecido: {trecho.start:.1f}s · {lingua}', flush=True)
+        for t in trechos:
+            originais.append(dict(start=t.start, end=t.end, text=t.text))
+            print(f'Trecho transcrito: {t.start:.1f}–{t.end:.1f}s', flush=True)
+        originais = identificar_idiomas(modelo_asr.model, audio, originais)
         resultado = {'segments': originais}
     else:
         resultado = modelo_asr.transcribe(audio, batch_size=1 if device == 'cpu' else 4,
@@ -182,8 +224,12 @@ def reconhecer(voz, *, modelo='small', idioma='pt', dispositivo='auto', pasta_mo
     for i, original in enumerate(resultado['segments'], 1):
         lingua = original.get('idioma', idioma)
         if lingua not in alinhadores:
-            alinhadores[lingua] = whisperx.load_align_model(language_code=lingua, device=device,
-                                                           model_dir=str(pasta_modelos / 'alinhamento'))
+            kwargs = dict(language_code=lingua, device=device,
+                          model_dir=str(pasta_modelos / 'alinhamento'))
+            try:
+                alinhadores[lingua] = whisperx.load_align_model(**kwargs, model_cache_only=True)
+            except (TypeError, OSError, ValueError):
+                alinhadores[lingua] = whisperx.load_align_model(**kwargs)
         alinhador, meta = alinhadores[lingua]
         alinhado = whisperx.align([original], alinhador, meta, audio, device,
                                  interpolate_method='ignore', return_char_alignments=False)
@@ -191,7 +237,8 @@ def reconhecer(voz, *, modelo='small', idioma='pt', dispositivo='auto', pasta_mo
         segmentos.append({**original, 'idioma': lingua, 'words': palavras})
         print(f'Alinhamento: {i}/{len(resultado["segments"])} segmentos', flush=True)
     return segmentos, duracao, dict(modelo=modelo, idioma=idioma, dispositivo=device,
-                                   compute_type=compute, vad='silero')
+                                   compute_type=compute, vad='silero',
+                                   identificacao_idioma='audio_e_texto_auditados' if idioma == 'bilingue' else 'fixo')
 
 
 def gerar(pasta, *, saida=None, modelo='small', idioma='pt', dispositivo='auto'):
@@ -208,9 +255,18 @@ def gerar(pasta, *, saida=None, modelo='small', idioma='pt', dispositivo='auto')
     blocos, avisos = agrupar_segmentos(segmentos, duracao)
     if idioma == 'bilingue':
         avisos.append('Modo bilíngue: idioma estimado por trecho; revise trocas de língua dentro da mesma frase.')
-    relatorio = dict(versao=1, arquivo_voz=str(voz), sha256_voz=hashlib.sha256(voz.read_bytes()).hexdigest(),
+        for i, s in enumerate(segmentos, 1):
+            analise = s.get('analise_idioma', {})
+            if analise.get('revisao_recomendada'):
+                avisos.append(f"Segmento {i} ({s['start']:.3f} s): evidência de idioma "
+                              f"incerta/divergente; alinhador {s['idioma']}. Consulte analise_idioma.")
+    relatorio = dict(versao=2, arquivo_voz=str(voz), sha256_voz=hashlib.sha256(voz.read_bytes()).hexdigest(),
                      duracao_audio=duracao, configuracao=configuracao, segmentos=segmentos,
                      blocos=blocos, avisos=avisos, revisao_recomendada=True)
+    relatorio['metricas'] = dict(segmentos=len(segmentos), blocos=len(blocos),
+        ajustes_temporais=sum(len(b.get('ajustes_temporais',[])) for b in blocos),
+        idiomas_revisar=sum(s.get('analise_idioma',{}).get('revisao_recomendada',False) for s in segmentos),
+        divergencias_audio_texto=sum(s.get('analise_idioma',{}).get('divergencia_audio_texto',False) for s in segmentos))
     referencias = [p for p in pasta.iterdir() if p.name.casefold() == 'letra.txt' and p.is_file()]
     if len(referencias) == 1:
         try:
@@ -219,6 +275,8 @@ def gerar(pasta, *, saida=None, modelo='small', idioma='pt', dispositivo='auto')
         except UnicodeError:
             avisos.append('Não foi possível comparar letra.txt: use codificação UTF-8.')
     caminho = publicar(texto_srt(blocos), relatorio, destino)
+    print(f"Diagnóstico: {relatorio['metricas']['ajustes_temporais']} ajuste(s) de fronteira; "
+          f"{relatorio['metricas']['idiomas_revisar']} segmento(s) com idioma a revisar.", flush=True)
     print(f'SRT gerado: {caminho}\nRevise a letra e os tempos antes de converter.', flush=True)
     return caminho
 
